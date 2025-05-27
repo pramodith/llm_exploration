@@ -45,16 +45,19 @@ def tokenize_example(example: dict[str, str], tokenizer: AutoTokenizer):
     You are a helpful assistant that will use reasoning, long chain of thought, backtracking, and 
     self-reflection to answer math problems.
     """
-    token_ids = tokenizer.apply_chat_template(
+    prompt = tokenizer.apply_chat_template(
         [{"role": "system", "content": system_prompt}, {"role": "user", "content": example["question"]}],
-        tokenize=True,
+        tokenize=False,
         add_generation_prompt=True,
-        return_tensors="pt",
     )
-    example["input_ids"] = token_ids
+    example["prompt"] = prompt
     return example
 
-def create_dataloader(dataset: Dataset, tokenizer: AutoTokenizer, is_train: bool = False):
+def create_dataloader(
+    dataset: Dataset, 
+    is_train: bool = False,
+    batch_size: int = 1,
+    ):
     """
     Create a dataloader for the dataset.
 
@@ -66,19 +69,19 @@ def create_dataloader(dataset: Dataset, tokenizer: AutoTokenizer, is_train: bool
     Returns:
         DataLoader: The dataloader.
     """
-    tokenized_dataset = dataset.map(tokenize_example, fn_kwargs={"tokenizer": tokenizer})
     do_shuffle = False
     if is_train:
         do_shuffle = True
-    # TODO: support batch_size > 1
-    dataloader = DataLoader(tokenized_dataset, batch_size=1, shuffle=do_shuffle)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=do_shuffle)
     return dataloader
 
 if __name__ == "__main__":
     train_dataset, test_dataset = get_gsm8k_dataset()
     tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-135M-Instruct")
-    train_dataloader = create_dataloader(train_dataset, tokenizer, is_train=True)
-    test_dataloader = create_dataloader(test_dataset, tokenizer, is_train=False)
+    train_dataset = train_dataset.map(tokenize_example, fn_kwargs={"tokenizer": tokenizer})
+    test_dataset = test_dataset.map(tokenize_example, fn_kwargs={"tokenizer": tokenizer})
+    train_dataloader = create_dataloader(train_dataset, is_train=False, batch_size=2)
+    test_dataloader = create_dataloader(test_dataset, is_train=False, batch_size=2)
     for batch in train_dataloader:
         print(batch)
         break

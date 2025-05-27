@@ -1,2 +1,6 @@
 .env
 riddles_dataset/
+.venv
+.pyc
+__pycache__
+launch.json
