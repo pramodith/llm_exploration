@@ -4,6 +4,7 @@ from trl import GRPOTrainer
 import torch
 from rewards import correct_answer_reward, format_reward
 from loguru import logger
+from typing import List
 
 from dataset_processor import get_gsm8k_dataset, create_dataloader, tokenize_example
 
@@ -13,10 +14,11 @@ class SimpleGRPOTrainer(pl.LightningModule):
         self, 
         model_name_or_path: str, 
         num_responses_per_example: int = 4,
-        top_k: int = 1,
+        top_k: int = 50,
         top_p: float = 0.9,
         temperature: float = 0.7,
-        max_gen_tokens: int = 128,
+        max_gen_tokens: int = 128, 
+        beta: float = 0.1,
     ):
         """
         Initialize the GRPOTrainer with a model.
@@ -29,6 +31,7 @@ class SimpleGRPOTrainer(pl.LightningModule):
             top_p (float): The cumulative probability threshold for nucleus sampling.
             temperature (float): The value used to module the logits before applying softmax.
             max_gen_tokens (int): The maximum number of tokens to generate.
+            beta (float): The scaling factor for the KL divergence loss against the reference model.
         """
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
@@ -40,6 +43,7 @@ class SimpleGRPOTrainer(pl.LightningModule):
         self.top_p = top_p
         self.temperature = temperature
         self.max_gen_tokens = max_gen_tokens
+        self.beta = beta
     
     def _get_logit_scores(
         self, 
@@ -66,23 +70,38 @@ class SimpleGRPOTrainer(pl.LightningModule):
 
         return groupwise_prob_scores
     
-    def compute_rewards(self, sampled_responses, answers):
+    def compute_rewards(self, sampled_responses: List, answers:List[str]):
         # Repeat the answers for each response num_responses_per_example times
         answers = [answer for answer in answers for _ in range(self.num_responses_per_example)]
+        sampled_responses = [response[i] for i in range(self.num_responses_per_example) for response in sampled_responses]
         correct_answer_rewards = correct_answer_reward(
             answers=sampled_responses,
             reference_answer=answers,
         )
         format_rewards = format_reward(
             answers=sampled_responses,
-            reference_format_regex=r"\d+",
+            reference_format_regex=r"(<think>)\w+(</think>)\s*(<answer>)(\d+)(</answer>)",
         )
-        return torch.tensor(correct_answer_rewards), torch.tensor(format_rewards)
-            
-        
-        
+        return torch.tensor(correct_answer_rewards).reshape(-1, self.num_responses_per_example), \
+            torch.tensor(format_rewards).reshape(-1, self.num_responses_per_example)
+    
+    def compute_advantage_score(self, rewards: torch.Tensor):
+        """
+        Standardize the rewards. To get the advantage score of each sampled response
+
+        Args:
+            rewards (torch.Tensor): The rewards to standardize.
+
+        Returns:
+            torch.Tensor: The advantage scores.
+        """
+        mean_rewards = rewards.mean(dim=1)
+        std = rewards.std(dim=1)
+        advantage_scores = (rewards - mean_rewards) / (std + 1e-8)
+        return advantage_scores
+    
     def training_step(self, batch, batch_idx):      
-        prompts = [b["prompt"] for b in batch]  
+        prompts = [prompt for prompt in batch["prompt"]] 
         
         inputs = self.tokenizer(
             prompts, 
@@ -92,7 +111,7 @@ class SimpleGRPOTrainer(pl.LightningModule):
             padding=True,
             padding_side='left'
         )
-        original_prompt_lengths = [torch.sum(inputs["attention_mask"][i]).item() for i in range(len(batch))]
+        original_prompt_lengths = [torch.sum(inputs["attention_mask"][i]).item() for i in range(len(batch["prompt"]))]
         # Get the completions from the policy model
         sampled_responses = self.policy_model.generate(
             **inputs,
@@ -107,15 +126,17 @@ class SimpleGRPOTrainer(pl.LightningModule):
         # Get rid of the prompt tokens in the response
         completion_ids = [
             sampled_responses[i*self.num_responses_per_example:(i+1)*self.num_responses_per_example, original_prompt_lengths[i]:]
-            for i in range(len(batch))
+            for i in range(len(batch["prompt"]))
         ]
 
         # Get the rewards for each response
-        correct_answer_rewards, format_rewards = self.compute_rewards(sampled_responses, batch["answer"])
-        correct_answer_rewards = torch.tensor(correct_answer_rewards).view(len(batch), self.num_responses_per_example)
-        format_rewards = torch.tensor(format_rewards).view(len(batch), self.num_responses_per_example)
-        logger.info(f"Correct answer rewards: {correct_answer_rewards.mean(dim=0)}")
-        logger.info(f"Format rewards: {format_rewards.mean(dim=0)}")
+        completions = [self.tokenizer.batch_decode(completion_ids[i], skip_special_tokens=True) 
+            for i in range(len(completion_ids))]
+        correct_answer_rewards, format_rewards = self.compute_rewards(completions, batch["answer"])
+        correct_answer_rewards = torch.tensor(correct_answer_rewards).view(len(batch["prompt"]), self.num_responses_per_example)
+        format_rewards = torch.tensor(format_rewards).view(len(batch["prompt"]), self.num_responses_per_example)
+        logger.info(f"Correct answer rewards: {correct_answer_rewards.mean(dim=1)}")
+        logger.info(f"Format rewards: {format_rewards.mean(dim=1)}")
 
         # Compute the forward pass with gradient calculation enabled.
         policy_logit_scores = self._get_logit_scores(inputs, completion_ids, is_policy_model=True)
@@ -125,22 +146,21 @@ class SimpleGRPOTrainer(pl.LightningModule):
 
 
 if __name__ == "__main__":
-    # trainer = SimpleGRPOTrainer(
-    #     model_name_or_path="HuggingFaceTB/SmolLM2-135M-Instruct",
-    #     num_responses_per_example=4,
-    #     top_k=1,
-    #     top_p=0.9,
-    #     temperature=0.7,
-    #     max_gen_tokens=128,
-    # )
-    tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-135M-Instruct")
+    trainer = SimpleGRPOTrainer(
+        model_name_or_path="HuggingFaceTB/SmolLM2-135M-Instruct",
+        num_responses_per_example=4,
+        top_k=50,
+        top_p=0.9,
+        temperature=0.7,
+        max_gen_tokens=128,
+    )
     train_dataset, test_dataset = get_gsm8k_dataset()
-    train_dataset = train_dataset.map(tokenize_example, fn_kwargs={"tokenizer": tokenizer})
-    test_dataset = test_dataset.map(tokenize_example, fn_kwargs={"tokenizer": tokenizer})
+    train_dataset = train_dataset.map(tokenize_example, fn_kwargs={"tokenizer": trainer.tokenizer})
+    test_dataset = test_dataset.map(tokenize_example, fn_kwargs={"tokenizer": trainer.tokenizer})
     train_dataloader = create_dataloader(train_dataset, is_train=False, batch_size=2)
     test_dataloader = create_dataloader(test_dataset, is_train=False, batch_size=2)
     for batch in train_dataloader:
-        print(batch)
+        trainer.training_step(batch, 0)
         break
     
     

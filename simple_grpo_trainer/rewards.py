@@ -1,4 +1,5 @@
 from typing import List
+import re
 
 def correct_answer_reward(answers: List[str], reference_answer: List[str]):
     """
@@ -25,8 +26,6 @@ def format_reward(answers: List[str], reference_format_regex: str, per_group_rew
     Returns:
         List[float]: The format reward.
     """
-
-    return [sum(re.match(reference_format_regex, answer).groups()) * per_group_reward 
-            for answer in answers
-        ]
+    matches = [re.match(reference_format_regex, answer) for answer in answers]
+    return [len(match.groups()) * per_group_reward if match else 0.0 for match in matches]
     

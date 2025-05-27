@@ -43,10 +43,28 @@ def tokenize_example(example: dict[str, str], tokenizer: AutoTokenizer):
     """
     system_prompt= """
     You are a helpful assistant that will use reasoning, long chain of thought, backtracking, and 
-    self-reflection to answer math problems.
+    self-reflection to answer math problems. You will respond using the following template:
+    Question: [question]
+    <think>
+    
+    </think>
+    <answer>
+    
+    </answer>
+    ## Example
+    Question: Joel has 24 cookies. He ate 12 cookies. How many cookies does Joel have left?
+    <think>
+    Since Joel ate 12 cookies, he has 24 - 12 = 12 cookies left.
+    </think>
+    <answer>
+    12
+    </answer>
+
+    ## Task
     """
     prompt = tokenizer.apply_chat_template(
-        [{"role": "system", "content": system_prompt}, {"role": "user", "content": example["question"]}],
+        [{"role": "system", "content": system_prompt}, 
+        {"role": "user", "content": f"Question: {example['question']}"}],
         tokenize=False,
         add_generation_prompt=True,
     )
