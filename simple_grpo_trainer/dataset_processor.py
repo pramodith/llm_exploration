@@ -1,0 +1,84 @@
+from datasets import Dataset, load_dataset
+from transformers import AutoTokenizer
+from torch.utils.data import DataLoader
+
+def extract_answer(example: dict[str, str]):
+    """
+    Extract the answer from the example.
+
+    Args:
+        example (dict[str, str]): The example to extract the answer from.
+
+    Returns:
+        dict[str, str]: The example with the answer extracted.
+    """
+    answer_loc = example["answer"].find("### ")
+    example["answer"] = example["answer"][answer_loc + 4:]
+    return example
+
+
+def get_gsm8k_dataset():
+    """
+    Load the GSM8K dataset.
+
+    Returns:
+        tuple: A tuple containing the train and test datasets.
+    """
+    dataset = load_dataset("openai/gsm8k", "main")
+    dataset = dataset.map(extract_answer)
+    train_dataset = dataset["train"]
+    test_dataset = dataset["test"]
+    return train_dataset, test_dataset
+
+def tokenize_example(example: dict[str, str], tokenizer: AutoTokenizer):
+    """
+    Tokenize the dataset.
+
+    Args:
+        example (dict[str, str]): The example to tokenize.
+        tokenizer (AutoTokenizer): The tokenizer to use.
+
+    Returns:
+        Dataset: The tokenized dataset.
+    """
+    system_prompt= """
+    You are a helpful assistant that will use reasoning, long chain of thought, backtracking, and 
+    self-reflection to answer math problems.
+    """
+    token_ids = tokenizer.apply_chat_template(
+        [{"role": "system", "content": system_prompt}, {"role": "user", "content": example["question"]}],
+        tokenize=True,
+        add_generation_prompt=True,
+        return_tensors="pt",
+    )
+    example["input_ids"] = token_ids
+    return example
+
+def create_dataloader(dataset: Dataset, tokenizer: AutoTokenizer, is_train: bool = False):
+    """
+    Create a dataloader for the dataset.
+
+    Args:
+        dataset (Dataset): The dataset to create a dataloader for.
+        tokenizer (AutoTokenizer): The tokenizer to use.
+        is_train (bool): Whether the dataset is for training.
+
+    Returns:
+        DataLoader: The dataloader.
+    """
+    tokenized_dataset = dataset.map(tokenize_example, fn_kwargs={"tokenizer": tokenizer})
+    do_shuffle = False
+    if is_train:
+        do_shuffle = True
+    # TODO: support batch_size > 1
+    dataloader = DataLoader(tokenized_dataset, batch_size=1, shuffle=do_shuffle)
+    return dataloader
+
+if __name__ == "__main__":
+    train_dataset, test_dataset = get_gsm8k_dataset()
+    tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-135M-Instruct")
+    train_dataloader = create_dataloader(train_dataset, tokenizer, is_train=True)
+    test_dataloader = create_dataloader(test_dataset, tokenizer, is_train=False)
+    for batch in train_dataloader:
+        print(batch)
+        break
