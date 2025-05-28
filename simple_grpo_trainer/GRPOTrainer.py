@@ -90,7 +90,15 @@ class SimpleGRPOTrainer(pl.LightningModule):
         return log_prob_scores.view(-1, self.num_responses_per_example, log_prob_scores.shape[-1])
     
 
-    def _get_completions_mask(self, sampled_responses: torch.LongTensor):
+    def _get_completions_mask(self, sampled_responses: torch.LongTensor) -> torch.Tensor:
+        """
+        Get a mask for identifying all the valid completion tokens.
+
+        Args:
+            sampled_responses: The token ids of the sampled responses/completions
+        Returns:
+            A masked torch tensor with 1s and 0s. 1s correspond to a valid token.
+        """
         # sampled_responses: [batch_size, seq_len]
         eos_token_id = self.tokenizer.eos_token_id
 
@@ -103,14 +111,16 @@ class SimpleGRPOTrainer(pl.LightningModule):
 
         # If you want strictly after (not including the EOS itself):
         after_eos_mask = cumsum_eos > 1
-        return after_eos_mask
+        after_eos_mask = ~after_eos_mask
+        # We need to invert the mask to get the valid tokens
+        return after_eos_mask.int()
 
     
     def compute_grpo_loss(
         self, 
-        policy_prob_scores: torch.Tensor,
-        old_policy_prob_scores: torch.Tensor,
-        reference_prob_scores: torch.Tensor, 
+        policy_logprob_scores: torch.Tensor,
+        old_policy_logprob_scores: torch.Tensor,
+        reference_logprob_scores: torch.Tensor, 
         advantage_scores: torch.Tensor,
         completions_mask: torch.Tensor,
         ):
@@ -118,11 +128,11 @@ class SimpleGRPOTrainer(pl.LightningModule):
         Compute the GRPO loss.
 
         Args:
-            policy_prob_scores (torch.Tensor): The probability scores from the policy model 
+            policy_logprob_scores (torch.Tensor): The probability scores from the policy model 
                 of shape (batch_size, num_responses_per_example, completions_seq_len).
-            old_policy_prob_scores (torch.Tensor): The probability scores from the old policy model 
+            old_logpolicy_prob_scores (torch.Tensor): The probability scores from the old policy model 
                 of shape (batch_size, num_responses_per_example, completions_seq_len).
-            reference_prob_scores (torch.Tensor): The probability scores from the reference model 
+            reference_logprob_scores (torch.Tensor): The probability scores from the reference model 
                 of shape (batch_size, num_responses_per_example, completions_seq_len).
             advantage_scores (torch.Tensor): The advantage scores 
                 of shape (batch_size, num_responses_per_example).
@@ -132,8 +142,8 @@ class SimpleGRPOTrainer(pl.LightningModule):
             torch.Tensor: The GRPO loss.
         """
         kl_div_loss = self.beta * torch.nn.functional.kl_div(
-            policy_prob_scores,
-            reference_prob_scores.log(),
+            input=policy_logprob_scores,
+            target=reference_logprob_scores,
             reduction="none",
             log_target=True,
         )
@@ -142,11 +152,11 @@ class SimpleGRPOTrainer(pl.LightningModule):
 
         completions_length = completions_mask.sum(dim=-1)
 
-        policy_ratio = policy_prob_scores / old_policy_prob_scores
+        policy_ratio = policy_logprob_scores - old_policy_logprob_scores
         policy_ratio = policy_ratio * completions_mask
         policy_ratio = policy_ratio.sum(dim=-1)
         clipped_policy_loss = torch.clamp(policy_ratio, 1 - self.epsilon, 1 + self.epsilon)
-        policy_loss = min(policy_loss * advantage_scores, clipped_policy_loss * advantage_scores)
+        policy_loss = torch.min(policy_ratio * advantage_scores, clipped_policy_loss * advantage_scores, dim=1)
         grpo_loss = policy_loss - kl_div_loss
         grpo_loss /= completions_length
         return grpo_loss.mean()
@@ -179,8 +189,8 @@ class SimpleGRPOTrainer(pl.LightningModule):
         Returns:
             torch.Tensor: The advantage scores.
         """
-        mean_rewards = rewards.mean(dim=1)
-        std = rewards.std(dim=1)
+        mean_rewards = rewards.mean(dim=1).unsqueeze(1)
+        std = rewards.std(dim=1).unsqueeze(1)
         advantage_scores = (rewards - mean_rewards) / (std + 1e-8)
         return advantage_scores
     
@@ -243,8 +253,10 @@ class SimpleGRPOTrainer(pl.LightningModule):
             policy_prob_scores,
             reference_prob_scores,
             advantage_scores,
-            completions_mask,
+            completions_mask.view(-1, self.num_responses_per_example, completion_ids.shape[-1]),
         )
+
+        logger.info(f"Loss is {loss.item()}")
         
 
 
