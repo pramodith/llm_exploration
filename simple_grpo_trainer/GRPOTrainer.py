@@ -220,6 +220,8 @@ class SimpleGRPOTrainer(pl.LightningModule):
         completions = [self.tokenizer.batch_decode(completion_ids[i*self.num_responses_per_example:(i+1)*self.num_responses_per_example], skip_special_tokens=True) 
             for i in range(len(batch["prompt"]))]
         correct_answer_rewards, format_rewards = self.compute_rewards(completions, batch["answer"])
+
+        advantage_scores = self.compute_advantage_score(correct_answer_rewards + format_rewards)
         logger.info(f"Correct answer rewards: {correct_answer_rewards.mean(dim=1)}")
         logger.info(f"Format rewards: {format_rewards.mean(dim=1)}")
         
@@ -238,9 +240,10 @@ class SimpleGRPOTrainer(pl.LightningModule):
 
         loss = self.compute_grpo_loss(
             policy_prob_scores,
-            old_policy_prob_scores,
+            policy_prob_scores,
             reference_prob_scores,
             advantage_scores,
+            completions_mask,
         )
         
 
