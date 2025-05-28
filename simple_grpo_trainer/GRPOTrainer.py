@@ -18,7 +18,8 @@ class SimpleGRPOTrainer(pl.LightningModule):
         top_p: float = 0.9,
         temperature: float = 0.7,
         max_gen_tokens: int = 128, 
-        beta: float = 0.1,
+        beta: float = 0.04,
+        epsilon: float = 0.2,
     ):
         """
         Initialize the GRPOTrainer with a model.
@@ -32,6 +33,7 @@ class SimpleGRPOTrainer(pl.LightningModule):
             temperature (float): The value used to module the logits before applying softmax.
             max_gen_tokens (int): The maximum number of tokens to generate.
             beta (float): The scaling factor for the KL divergence loss against the reference model.
+            epsilon (float): The epsilon clipping value
         """
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
@@ -44,36 +46,118 @@ class SimpleGRPOTrainer(pl.LightningModule):
         self.temperature = temperature
         self.max_gen_tokens = max_gen_tokens
         self.beta = beta
+        self.epsilon = epsilon
     
-    def _get_logit_scores(
+    def _get_completion_log_prob_scores(
         self, 
-        inputs: dict[str, torch.LongTensor],
+        prompt_ids: torch.LongTensor,
+        prompt_mask: torch.LongTensor,
         completion_ids: torch.LongTensor,
+        completions_mask: torch.LongTensor,
         is_policy_model: bool = True
         ):
+        """
+        We need to obtain the logit scores of the completions from the sampled responses
+        for the current-policy, old-policy and reference model.
+
+        To do this we run a single forward pass through the model with the prompt and completion
+        concatenated and get the logit scores for each of the completions.
+
+        Args:
+            prompt_ids (torch.LongTensor): The prompt ids of shape (batch_size * num_responses_per_example, seq_len).
+            prompt_mask (torch.LongTensor): The prompt mask of shape (batch_size * num_responses_per_example, seq_len).
+            completion_ids (torch.LongTensor): The completion ids of shape (batch_size * num_responses_per_example, seq_len).
+            completions_mask (torch.LongTensor): The completions mask of shape (batch_size * num_responses_per_example, seq_len).
+            is_policy_model (bool): Whether to use the policy model.
+        """
+        prompt_completion_input = torch.cat([prompt_ids, completion_ids], dim=-1)
+        prompt_length = prompt_ids.shape[-1]
+        prompt_completion_mask = torch.cat([prompt_mask, completions_mask], dim=-1)
         if is_policy_model:
-            logit_scores = self.policy_model(**inputs).logits
+            logit_scores = self.policy_model(input_ids = prompt_completion_input, attention_mask = prompt_completion_mask).logits
         else:
             with torch.no_grad():
-                logit_scores = self.reference_model(**inputs).logits
+                logit_scores = self.reference_model(input_ids = prompt_completion_input, attention_mask = prompt_completion_mask).logits
+        # Logit scores are of shape (batch_size * num_responses_per_example, seq_len + 1, vocab_size)
+        # We exclude the logit scores for the prompt and the last token 
+        # because it corresponds to the next token prediction
+        logit_scores = logit_scores[:, prompt_length-1:-1, :]
+        # We only need to keep the logit scores corresponding to the completion tokens
+        logit_scores = torch.gather(logit_scores, dim=-1, index=completion_ids.unsqueeze(-1)).squeeze(-1)
+        # Get log_probs to avoid numerical underflow/overflow
         logit_scores = logit_scores / self.temperature
+        log_prob_scores = torch.log_softmax(logit_scores, dim=-1)
+        return log_prob_scores.view(-1, self.num_responses_per_example, log_prob_scores.shape[-1])
+    
 
-        prob_scores = torch.softmax(logit_scores, dim=-1)
-        groupwise_prob_scores = []
+    def _get_completions_mask(self, sampled_responses: torch.LongTensor):
+        # sampled_responses: [batch_size, seq_len]
+        eos_token_id = self.tokenizer.eos_token_id
+
+        # Find the first occurrence of EOS in each response
+        eos_positions = (sampled_responses == eos_token_id).float()
+        # Cumulative sum along the sequence dimension
+        cumsum_eos = eos_positions.cumsum(dim=1)
+        # Mask: 1 after the first EOS (strictly after), 0 otherwise
+        after_eos_mask = cumsum_eos > 1e-6  # 1e-6 avoids float precision issues
+
+        # If you want strictly after (not including the EOS itself):
+        after_eos_mask = cumsum_eos > 1
+        return after_eos_mask
+
+    
+    def compute_grpo_loss(
+        self, 
+        policy_prob_scores: torch.Tensor,
+        old_policy_prob_scores: torch.Tensor,
+        reference_prob_scores: torch.Tensor, 
+        advantage_scores: torch.Tensor,
+        completions_mask: torch.Tensor,
+        ):
+        """
+        Compute the GRPO loss.
+
+        Args:
+            policy_prob_scores (torch.Tensor): The probability scores from the policy model 
+                of shape (batch_size, num_responses_per_example, completions_seq_len).
+            old_policy_prob_scores (torch.Tensor): The probability scores from the old policy model 
+                of shape (batch_size, num_responses_per_example, completions_seq_len).
+            reference_prob_scores (torch.Tensor): The probability scores from the reference model 
+                of shape (batch_size, num_responses_per_example, completions_seq_len).
+            advantage_scores (torch.Tensor): The advantage scores 
+                of shape (batch_size, num_responses_per_example).
+            completions_mask (torch.Tensor): The mask for the completions 
+                of shape (batch_size, num_responses_per_example, completions_seq_len).
+        Returns:
+            torch.Tensor: The GRPO loss.
+        """
+        kl_div_loss = self.beta * torch.nn.functional.kl_div(
+            policy_prob_scores,
+            reference_prob_scores.log(),
+            reduction="none",
+            log_target=True,
+        )
+        kl_div_loss = kl_div_loss * completions_mask
+        kl_div_loss = self.beta * kl_div_loss.sum(dim=-1)
+
+        completions_length = completions_mask.sum(dim=-1)
+
+        policy_ratio = policy_prob_scores / old_policy_prob_scores
+        policy_ratio = policy_ratio * completions_mask
+        policy_ratio = policy_ratio.sum(dim=-1)
+        clipped_policy_loss = torch.clamp(policy_ratio, 1 - self.epsilon, 1 + self.epsilon)
+        policy_loss = min(policy_loss * advantage_scores, clipped_policy_loss * advantage_scores)
+        grpo_loss = policy_loss - kl_div_loss
+        grpo_loss /= completions_length
+        return grpo_loss.mean()
         
-        # Get the probability scores for each response
-        for query_id in range(len(completion_ids)):
-            for response_num in range(self.num_responses_per_example):
-                groupwise_prob_scores.append(
-                    prob_scores[query_id].gather(1, completion_ids[query_id][response_num].unsqueeze(-1))
-                )
-
-        return groupwise_prob_scores
     
     def compute_rewards(self, sampled_responses: List, answers:List[str]):
         # Repeat the answers for each response num_responses_per_example times
         answers = [answer for answer in answers for _ in range(self.num_responses_per_example)]
-        sampled_responses = [response[i] for i in range(self.num_responses_per_example) for response in sampled_responses]
+        sampled_responses = [
+            response[i] for i in range(self.num_responses_per_example) for response in sampled_responses
+        ]
         correct_answer_rewards = correct_answer_reward(
             answers=sampled_responses,
             reference_answer=answers,
@@ -82,8 +166,8 @@ class SimpleGRPOTrainer(pl.LightningModule):
             answers=sampled_responses,
             reference_format_regex=r"(<think>)\w+(</think>)\s*(<answer>)(\d+)(</answer>)",
         )
-        return torch.tensor(correct_answer_rewards).reshape(-1, self.num_responses_per_example), \
-            torch.tensor(format_rewards).reshape(-1, self.num_responses_per_example)
+        return torch.tensor(correct_answer_rewards).view(-1, self.num_responses_per_example), \
+            torch.tensor(format_rewards).view(-1, self.num_responses_per_example)
     
     def compute_advantage_score(self, rewards: torch.Tensor):
         """
@@ -109,9 +193,15 @@ class SimpleGRPOTrainer(pl.LightningModule):
             truncation=True, 
             max_length=512, 
             padding=True,
-            padding_side='left'
+            padding_side='left',
+            add_special_tokens=False
         )
-        original_prompt_lengths = [torch.sum(inputs["attention_mask"][i]).item() for i in range(len(batch["prompt"]))]
+
+        prompt_mask = inputs["attention_mask"]
+        # Since we pad the prompts, 
+        # all the completions will start from the size of the padded input/prompt
+        prompt_end_index = inputs["input_ids"].size(1)
+        
         # Get the completions from the policy model
         sampled_responses = self.policy_model.generate(
             **inputs,
@@ -122,26 +212,36 @@ class SimpleGRPOTrainer(pl.LightningModule):
             max_new_tokens=self.max_gen_tokens,
             num_return_sequences=self.num_responses_per_example,
         )
-
         # Get rid of the prompt tokens in the response
-        completion_ids = [
-            sampled_responses[i*self.num_responses_per_example:(i+1)*self.num_responses_per_example, original_prompt_lengths[i]:]
-            for i in range(len(batch["prompt"]))
-        ]
+        completion_ids = sampled_responses[:, prompt_end_index:]
+        completions_mask = self._get_completions_mask(completion_ids)
 
         # Get the rewards for each response
-        completions = [self.tokenizer.batch_decode(completion_ids[i], skip_special_tokens=True) 
-            for i in range(len(completion_ids))]
+        completions = [self.tokenizer.batch_decode(completion_ids[i*self.num_responses_per_example:(i+1)*self.num_responses_per_example], skip_special_tokens=True) 
+            for i in range(len(batch["prompt"]))]
         correct_answer_rewards, format_rewards = self.compute_rewards(completions, batch["answer"])
-        correct_answer_rewards = torch.tensor(correct_answer_rewards).view(len(batch["prompt"]), self.num_responses_per_example)
-        format_rewards = torch.tensor(format_rewards).view(len(batch["prompt"]), self.num_responses_per_example)
         logger.info(f"Correct answer rewards: {correct_answer_rewards.mean(dim=1)}")
         logger.info(f"Format rewards: {format_rewards.mean(dim=1)}")
+        
+        # Repeat the prompts for each response
+        prompt_ids = inputs["input_ids"].repeat_interleave(self.num_responses_per_example, dim=0)
+        prompt_mask = inputs["attention_mask"].repeat_interleave(self.num_responses_per_example, dim=0)
 
         # Compute the forward pass with gradient calculation enabled.
-        policy_logit_scores = self._get_logit_scores(inputs, completion_ids, is_policy_model=True)
+        policy_prob_scores = self._get_completion_log_prob_scores(
+            prompt_ids, prompt_mask, completion_ids, completions_mask, is_policy_model=True
+        )
         # Compute the forward pass with gradient calculation disabled.
-        reference_logit_scores = self._get_logit_scores(inputs, completion_ids, is_policy_model=False)    
+        reference_prob_scores = self._get_completion_log_prob_scores(
+            prompt_ids, prompt_mask, completion_ids, completions_mask, is_policy_model=False
+        )
+
+        loss = self.compute_grpo_loss(
+            policy_prob_scores,
+            old_policy_prob_scores,
+            reference_prob_scores,
+            advantage_scores,
+        )
         
 
 
