@@ -6,6 +6,8 @@ from rewards import correct_answer_reward, format_reward
 from loguru import logger
 from typing import List
 
+import copy
+
 from dataset_processor import get_gsm8k_dataset, create_dataloader, tokenize_example
 
 logger.add("grpo_trainer.log", rotation="10 MB")
@@ -20,6 +22,7 @@ class SimpleGRPOTrainer(pl.LightningModule):
         max_gen_tokens: int = 128, 
         beta: float = 0.04,
         epsilon: float = 0.2,
+        num_steps_to_refresh_old_policy: int = 2
     ):
         """
         Initialize the GRPOTrainer with a model.
@@ -34,6 +37,8 @@ class SimpleGRPOTrainer(pl.LightningModule):
             max_gen_tokens (int): The maximum number of tokens to generate.
             beta (float): The scaling factor for the KL divergence loss against the reference model.
             epsilon (float): The epsilon clipping value
+            num_steps_to_refresh_old_policy (int): The old policy is updated to match the current policy after the
+                corresponding number of steps.
         """
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
@@ -47,6 +52,7 @@ class SimpleGRPOTrainer(pl.LightningModule):
         self.max_gen_tokens = max_gen_tokens
         self.beta = beta
         self.epsilon = epsilon
+        self.num_steps_to_refresh_old_policy = num_steps_to_refresh_old_policy
     
     def _get_completion_log_prob_scores(
         self, 
@@ -103,12 +109,9 @@ class SimpleGRPOTrainer(pl.LightningModule):
         eos_token_id = self.tokenizer.eos_token_id
 
         # Find the first occurrence of EOS in each response
-        eos_positions = (sampled_responses == eos_token_id).float()
+        eos_positions = (sampled_responses == eos_token_id).int()
         # Cumulative sum along the sequence dimension
         cumsum_eos = eos_positions.cumsum(dim=1)
-        # Mask: 1 after the first EOS (strictly after), 0 otherwise
-        after_eos_mask = cumsum_eos > 1e-6  # 1e-6 avoids float precision issues
-
         # If you want strictly after (not including the EOS itself):
         after_eos_mask = cumsum_eos > 1
         after_eos_mask = ~after_eos_mask
@@ -152,15 +155,14 @@ class SimpleGRPOTrainer(pl.LightningModule):
 
         completions_length = completions_mask.sum(dim=-1)
 
-        policy_ratio = policy_logprob_scores - old_policy_logprob_scores
+        policy_ratio = torch.exp(policy_logprob_scores - old_policy_logprob_scores)
         policy_ratio = policy_ratio * completions_mask
-        policy_ratio = policy_ratio.sum(dim=-1)
         clipped_policy_loss = torch.clamp(policy_ratio, 1 - self.epsilon, 1 + self.epsilon)
         policy_loss = torch.minimum(policy_ratio * advantage_scores, clipped_policy_loss * advantage_scores)
+        policy_loss = policy_loss.sum(dim=-1)
         grpo_loss = policy_loss - kl_div_loss
         grpo_loss /= completions_length
         return grpo_loss.mean()
-        
     
     def compute_rewards(self, sampled_responses: List, answers:List[str]):
         # Repeat the answers for each response num_responses_per_example times
@@ -194,6 +196,11 @@ class SimpleGRPOTrainer(pl.LightningModule):
         advantage_scores = (rewards - mean_rewards) / (std + 1e-8)
         return advantage_scores
     
+    def on_train_batch_start(self, batch, batch_idx, dataloader_idx=0):
+        current_step = self.trainer.global_step
+        if current_step > 0 and current_step % self.num_steps_to_refresh_old_policy == 0:
+            self.old_policy_model = copy.deepcopy(self.policy_model)
+
     def training_step(self, batch, batch_idx):      
         prompts = [prompt for prompt in batch["prompt"]] 
         
