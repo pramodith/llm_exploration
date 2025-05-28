@@ -67,6 +67,7 @@ def tokenize_example(example: dict[str, str], tokenizer: AutoTokenizer):
         {"role": "user", "content": f"Question: {example['question']}"}],
         tokenize=False,
         add_generation_prompt=True,
+        enable_thinking=True,
     )
     example["prompt"] = prompt
     return example

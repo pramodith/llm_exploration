@@ -50,8 +50,16 @@ class SimpleGRPOModule(pl.LightningModule):
         """
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
-        self.policy_model = AutoModelForCausalLM.from_pretrained(model_name_or_path)
-        self.reference_model = AutoModelForCausalLM.from_pretrained(model_name_or_path)
+        self.policy_model = AutoModelForCausalLM.from_pretrained(
+            model_name_or_path, 
+            torch_dtype="auto", 
+            device_map="auto"
+        )
+        self.reference_model = AutoModelForCausalLM.from_pretrained(
+            model_name_or_path, 
+            torch_dtype="auto", 
+            device_map="auto"
+        )
         self.reference_model.eval()
         self.num_responses_per_example = num_responses_per_example
         self.top_k = top_k
@@ -181,7 +189,7 @@ class SimpleGRPOModule(pl.LightningModule):
         policy_ratio = torch.exp(policy_logprob_scores - old_policy_logprob_scores)
         policy_ratio = policy_ratio * completions_mask
         clipped_policy_loss = torch.clamp(policy_ratio, 1 - self.epsilon, 1 + self.epsilon)
-        policy_loss = torch.minimum(policy_ratio * advantage_scores, clipped_policy_loss * advantage_scores)
+        policy_loss = torch.minimum(policy_ratio * advantage_scores.unsqueeze(-1), clipped_policy_loss * advantage_scores.unsqueeze(-1))
         policy_loss = policy_loss.sum(dim=-1)
         grpo_loss = policy_loss - kl_div_loss
         grpo_loss /= completions_length
@@ -199,10 +207,13 @@ class SimpleGRPOModule(pl.LightningModule):
         )
         format_rewards = format_reward(
             answers=sampled_responses,
-            reference_format_regex=r"(<think>)\w+(</think>)\s*(<answer>)(\d+)(</answer>)",
+            # reference_format_regex=r"(<think>)\w+(</think>)\s*(<answer>)(\d+)(</answer>)",
+            reference_format_regex=r"(?i)(answer)[\w\s]*(\d+)"
         )
-        return torch.tensor(correct_answer_rewards).view(-1, self.num_responses_per_example), \
-            torch.tensor(format_rewards).view(-1, self.num_responses_per_example)
+        correct_answer_rewards = torch.tensor(correct_answer_rewards).view(-1, self.num_responses_per_example)
+        format_rewards = torch.tensor(format_rewards).view(-1, self.num_responses_per_example)
+
+        return correct_answer_rewards.to(self.device), format_rewards.to(self.device)
     
     def compute_advantage_score(self, rewards: torch.Tensor):
         """
@@ -267,6 +278,8 @@ class SimpleGRPOModule(pl.LightningModule):
             add_special_tokens=False
         )
 
+        inputs = inputs.to(self.device)
+
         prompt_mask = inputs["attention_mask"]
         # Since we pad the prompts, 
         # all the completions will start from the size of the padded input/prompt
@@ -289,6 +302,9 @@ class SimpleGRPOModule(pl.LightningModule):
         # Get the rewards for each response
         completions = [self.tokenizer.batch_decode(completion_ids[i*self.num_responses_per_example:(i+1)*self.num_responses_per_example], skip_special_tokens=True) 
             for i in range(len(batch["prompt"]))]
+        
+        logger.info(f"Sample question: {batch['question'][0]}")
+        logger.info(f"Sampled responses: {completions[0]}")
         correct_answer_rewards, format_rewards = self.compute_rewards(completions, batch["answer"])
 
         advantage_scores = self.compute_advantage_score(correct_answer_rewards + format_rewards)
@@ -342,7 +358,7 @@ if __name__ == "__main__":
         top_k=50,
         top_p=0.9,
         temperature=0.7,
-        max_gen_tokens=128,
+        max_gen_tokens=512,
         max_steps=4
     )
     train_dataset, test_dataset = get_gsm8k_dataset()
@@ -355,7 +371,7 @@ if __name__ == "__main__":
     grpo_trainer = Trainer(
         max_steps=4,
         accelerator="auto",
-        precision="16",
+        precision="bf16",
         callbacks=[lr_monitor],
         enable_progress_bar=True,
         enable_model_summary=True,
