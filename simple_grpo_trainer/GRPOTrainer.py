@@ -156,7 +156,7 @@ class SimpleGRPOTrainer(pl.LightningModule):
         policy_ratio = policy_ratio * completions_mask
         policy_ratio = policy_ratio.sum(dim=-1)
         clipped_policy_loss = torch.clamp(policy_ratio, 1 - self.epsilon, 1 + self.epsilon)
-        policy_loss = torch.min(policy_ratio * advantage_scores, clipped_policy_loss * advantage_scores, dim=1)
+        policy_loss = torch.minimum(policy_ratio * advantage_scores, clipped_policy_loss * advantage_scores)
         grpo_loss = policy_loss - kl_div_loss
         grpo_loss /= completions_length
         return grpo_loss.mean()
@@ -255,8 +255,8 @@ class SimpleGRPOTrainer(pl.LightningModule):
             advantage_scores,
             completions_mask.view(-1, self.num_responses_per_example, completion_ids.shape[-1]),
         )
-
         logger.info(f"Loss is {loss.item()}")
+        return loss
         
 
 
