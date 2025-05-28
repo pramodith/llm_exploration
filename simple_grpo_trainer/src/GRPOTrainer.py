@@ -1,5 +1,8 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers.optimization import get_linear_schedule_with_warmup
 import lightning as pl
+from lightning.pytorch import Trainer
+from lightning.pytorch.callbacks import LearningRateMonitor
 from trl import GRPOTrainer
 import torch
 from rewards import correct_answer_reward, format_reward
@@ -12,8 +15,8 @@ from dataset_processor import get_gsm8k_dataset, create_dataloader, tokenize_exa
 from schemas import ModelType
 
 logger.add("grpo_trainer.log", rotation="10 MB")
-
-class SimpleGRPOTrainer(pl.LightningModule):
+pl.seed_everything(42, workers=True)
+class SimpleGRPOModule(pl.LightningModule):
     def __init__(
         self, 
         model_name_or_path: str, 
@@ -24,7 +27,9 @@ class SimpleGRPOTrainer(pl.LightningModule):
         max_gen_tokens: int = 128, 
         beta: float = 0.04,
         epsilon: float = 0.2,
-        num_steps_to_refresh_old_policy: int = 2
+        num_steps_to_refresh_old_policy: int = 2,
+        learning_rate: float = 1e-6,
+        max_steps: int = 1000
     ):
         """
         Initialize the GRPOTrainer with a model.
@@ -41,6 +46,7 @@ class SimpleGRPOTrainer(pl.LightningModule):
             epsilon (float): The epsilon clipping value
             num_steps_to_refresh_old_policy (int): The old policy is updated to match the current policy after the
                 corresponding number of steps.
+            learning_rate (float): The learning rate for the optimizer.
         """
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
@@ -55,6 +61,8 @@ class SimpleGRPOTrainer(pl.LightningModule):
         self.beta = beta
         self.epsilon = epsilon
         self.num_steps_to_refresh_old_policy = num_steps_to_refresh_old_policy
+        self.learning_rate = learning_rate
+        self.max_steps = max_steps
         self._step = 0
         self._disable_dropout()
     
@@ -215,7 +223,32 @@ class SimpleGRPOTrainer(pl.LightningModule):
         if self._step % self.num_steps_to_refresh_old_policy == 0:
             self.old_policy_model = copy.deepcopy(self.policy_model)
             self.old_policy_model.eval()
-        return super().on_train_batch_start(batch, batch_idx, dataloader_idx)
+        return super().on_train_batch_start(batch, batch_idx)
+    
+    def configure_optimizers(self):
+        """
+        Configure the optimizer for the GRPOTrainer.
+        We use AdamW optimizer
+        """
+        optimizer = torch.optim.AdamW(
+            self.policy_model.parameters(), 
+            lr=self.learning_rate, 
+            weight_decay=0.0
+        )
+
+        scheduler = get_linear_schedule_with_warmup(
+            optimizer, 
+            num_warmup_steps=0, 
+            num_training_steps=self.max_steps
+        )
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "step",
+                "frequency": 1,
+            },
+        }
 
 
     def training_step(self, batch, batch_idx):        
@@ -303,21 +336,35 @@ class SimpleGRPOTrainer(pl.LightningModule):
 
 
 if __name__ == "__main__":
-    trainer = SimpleGRPOTrainer(
+    grpo_module = SimpleGRPOModule(
         model_name_or_path="HuggingFaceTB/SmolLM2-135M-Instruct",
         num_responses_per_example=4,
         top_k=50,
         top_p=0.9,
         temperature=0.7,
         max_gen_tokens=128,
+        max_steps=4
     )
     train_dataset, test_dataset = get_gsm8k_dataset()
-    train_dataset = train_dataset.map(tokenize_example, fn_kwargs={"tokenizer": trainer.tokenizer})
-    test_dataset = test_dataset.map(tokenize_example, fn_kwargs={"tokenizer": trainer.tokenizer})
+    train_dataset = train_dataset.map(tokenize_example, fn_kwargs={"tokenizer": grpo_module.tokenizer})
+    test_dataset = test_dataset.map(tokenize_example, fn_kwargs={"tokenizer": grpo_module.tokenizer})
     train_dataloader = create_dataloader(train_dataset, is_train=False, batch_size=2)
     test_dataloader = create_dataloader(test_dataset, is_train=False, batch_size=2)
-    for batch in train_dataloader:
-        trainer.training_step(batch, 0)
-        break
+    lr_monitor = LearningRateMonitor(logging_interval='step')
+
+    grpo_trainer = Trainer(
+        max_steps=4,
+        accelerator="auto",
+        precision="16",
+        callbacks=[lr_monitor],
+        enable_progress_bar=True,
+        enable_model_summary=True,
+        log_every_n_steps=1,
+    )
     
+    grpo_trainer.fit(
+        model=grpo_module, 
+        train_dataloaders=train_dataloader, 
+        val_dataloaders=test_dataloader
+    )
     
