@@ -4,3 +4,5 @@ riddles_dataset/
 .pyc
 __pycache__
 launch.json
+.log
+*.egg-info

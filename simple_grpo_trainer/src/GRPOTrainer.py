@@ -1,4 +1,4 @@
-from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer
 import lightning as pl
 from trl import GRPOTrainer
 import torch
@@ -9,8 +9,10 @@ from typing import List
 import copy
 
 from dataset_processor import get_gsm8k_dataset, create_dataloader, tokenize_example
+from schemas import ModelType
 
 logger.add("grpo_trainer.log", rotation="10 MB")
+
 class SimpleGRPOTrainer(pl.LightningModule):
     def __init__(
         self, 
@@ -53,6 +55,8 @@ class SimpleGRPOTrainer(pl.LightningModule):
         self.beta = beta
         self.epsilon = epsilon
         self.num_steps_to_refresh_old_policy = num_steps_to_refresh_old_policy
+        self._step = 0
+        self._disable_dropout()
     
     def _get_completion_log_prob_scores(
         self, 
@@ -60,7 +64,7 @@ class SimpleGRPOTrainer(pl.LightningModule):
         prompt_mask: torch.LongTensor,
         completion_ids: torch.LongTensor,
         completions_mask: torch.LongTensor,
-        is_policy_model: bool = True
+        model_type: ModelType
         ):
         """
         We need to obtain the logit scores of the completions from the sampled responses
@@ -79,11 +83,16 @@ class SimpleGRPOTrainer(pl.LightningModule):
         prompt_completion_input = torch.cat([prompt_ids, completion_ids], dim=-1)
         prompt_length = prompt_ids.shape[-1]
         prompt_completion_mask = torch.cat([prompt_mask, completions_mask], dim=-1)
-        if is_policy_model:
+        if model_type == ModelType.Active:
             logit_scores = self.policy_model(input_ids = prompt_completion_input, attention_mask = prompt_completion_mask).logits
-        else:
+        elif model_type == ModelType.Old:
+            with torch.no_grad():
+                logit_scores = self.old_policy_model(input_ids = prompt_completion_input, attention_mask = prompt_completion_mask).logits
+        elif model_type == ModelType.Reference:
+            # We do not want to compute gradients for the reference model
             with torch.no_grad():
                 logit_scores = self.reference_model(input_ids = prompt_completion_input, attention_mask = prompt_completion_mask).logits
+        
         # Logit scores are of shape (batch_size * num_responses_per_example, seq_len + 1, vocab_size)
         # We exclude the logit scores for the prompt and the last token 
         # because it corresponds to the next token prediction
@@ -95,6 +104,15 @@ class SimpleGRPOTrainer(pl.LightningModule):
         log_prob_scores = torch.log_softmax(logit_scores, dim=-1)
         return log_prob_scores.view(-1, self.num_responses_per_example, log_prob_scores.shape[-1])
     
+    def _disable_dropout(self):
+        """
+        Disable dropout layers in the active policy model
+        to ensure that the model behaves deterministically during training.
+        """
+        for module in self.policy_model.modules():
+            if isinstance(module, torch.nn.Dropout):
+                module.p = 0.0
+                module.training = False
 
     def _get_completions_mask(self, sampled_responses: torch.LongTensor) -> torch.Tensor:
         """
@@ -144,12 +162,9 @@ class SimpleGRPOTrainer(pl.LightningModule):
         Returns:
             torch.Tensor: The GRPO loss.
         """
-        kl_div_loss = self.beta * torch.nn.functional.kl_div(
-            input=policy_logprob_scores,
-            target=reference_logprob_scores,
-            reduction="none",
-            log_target=True,
-        )
+        # GRPO uses a custom forumation of KL divergence loss that's always positive
+        ref_policy_logprob_diff = reference_logprob_scores - policy_logprob_scores
+        kl_div_loss = torch.exp(ref_policy_logprob_diff) - ref_policy_logprob_diff - 1
         kl_div_loss = kl_div_loss * completions_mask
         kl_div_loss = self.beta * kl_div_loss.sum(dim=-1)
 
@@ -197,11 +212,16 @@ class SimpleGRPOTrainer(pl.LightningModule):
         return advantage_scores
     
     def on_train_batch_start(self, batch, batch_idx, dataloader_idx=0):
-        current_step = self.trainer.global_step
-        if current_step > 0 and current_step % self.num_steps_to_refresh_old_policy == 0:
+        if self._step % self.num_steps_to_refresh_old_policy == 0:
             self.old_policy_model = copy.deepcopy(self.policy_model)
+            self.old_policy_model.eval()
+        return super().on_train_batch_start(batch, batch_idx, dataloader_idx)
 
-    def training_step(self, batch, batch_idx):      
+
+    def training_step(self, batch, batch_idx):        
+        # Get the prompts and answers from the batch
+        # The batch is a dictionary with keys "prompt" and "answer"
+        # and values are lists of strings.
         prompts = [prompt for prompt in batch["prompt"]] 
         
         inputs = self.tokenizer(
@@ -248,22 +268,37 @@ class SimpleGRPOTrainer(pl.LightningModule):
 
         # Compute the forward pass with gradient calculation enabled.
         policy_prob_scores = self._get_completion_log_prob_scores(
-            prompt_ids, prompt_mask, completion_ids, completions_mask, is_policy_model=True
+            prompt_ids, prompt_mask, completion_ids, completions_mask, model_type=ModelType.Active
         )
+        if self._step % self.num_steps_to_refresh_old_policy != 0:
+            # If we are refreshing the old policy, we need to compute the log probabilities
+            # for the old policy model as well.
+            old_policy_prob_scores = self._get_completion_log_prob_scores(
+                prompt_ids, prompt_mask, completion_ids, completions_mask, model_type=ModelType.Old
+            )
+        else:
+            # The old policy model is the same as the current policy model so the outputs would
+            # be the same.
+            old_policy_prob_scores = policy_prob_scores
+        
         # Compute the forward pass with gradient calculation disabled.
         reference_prob_scores = self._get_completion_log_prob_scores(
-            prompt_ids, prompt_mask, completion_ids, completions_mask, is_policy_model=False
+            prompt_ids, prompt_mask, completion_ids, completions_mask, model_type=ModelType.Reference
         )
 
         loss = self.compute_grpo_loss(
             policy_prob_scores,
-            policy_prob_scores,
+            old_policy_prob_scores,
             reference_prob_scores,
             advantage_scores,
             completions_mask.view(-1, self.num_responses_per_example, completion_ids.shape[-1]),
         )
         logger.info(f"Loss is {loss.item()}")
         return loss
+
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        self._step += 1
+        return super().on_train_batch_end(outputs, batch, batch_idx)
         
 
 
