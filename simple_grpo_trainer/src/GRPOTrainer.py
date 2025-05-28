@@ -191,6 +191,8 @@ class SimpleGRPOModule(pl.LightningModule):
         clipped_policy_loss = torch.clamp(policy_ratio, 1 - self.epsilon, 1 + self.epsilon)
         policy_loss = torch.minimum(policy_ratio * advantage_scores.unsqueeze(-1), clipped_policy_loss * advantage_scores.unsqueeze(-1))
         policy_loss = policy_loss.sum(dim=-1)
+        logger.info(f"Policy loss: {(policy_loss/completions_length).mean()}")
+        logger.info(f"KL div loss: {(kl_div_loss/completions_length).mean()}")
         grpo_loss = policy_loss - kl_div_loss
         grpo_loss /= completions_length
         return grpo_loss.mean()
@@ -208,7 +210,7 @@ class SimpleGRPOModule(pl.LightningModule):
         format_rewards = format_reward(
             answers=sampled_responses,
             # reference_format_regex=r"(<think>)\w+(</think>)\s*(<answer>)(\d+)(</answer>)",
-            reference_format_regex=r"(?i)(answer)[\w\s]*(\d+)"
+            reference_format_regex=r"(?is).*(answer).*(\d+)"
         )
         correct_answer_rewards = torch.tensor(correct_answer_rewards).view(-1, self.num_responses_per_example)
         format_rewards = torch.tensor(format_rewards).view(-1, self.num_responses_per_example)
@@ -304,7 +306,8 @@ class SimpleGRPOModule(pl.LightningModule):
             for i in range(len(batch["prompt"]))]
         
         logger.info(f"Sample question: {batch['question'][0]}")
-        logger.info(f"Sampled responses: {completions[0]}")
+        logger.info(f"Sample answer: {batch['answer'][0]}")
+        logger.info(f"Sampled responses: {completions[0][0]}")
         correct_answer_rewards, format_rewards = self.compute_rewards(completions, batch["answer"])
 
         advantage_scores = self.compute_advantage_score(correct_answer_rewards + format_rewards)
@@ -359,7 +362,7 @@ if __name__ == "__main__":
         top_p=0.9,
         temperature=0.7,
         max_gen_tokens=512,
-        max_steps=4
+        max_steps=8
     )
     train_dataset, test_dataset = get_gsm8k_dataset()
     train_dataset = train_dataset.map(tokenize_example, fn_kwargs={"tokenizer": grpo_module.tokenizer})
@@ -369,7 +372,7 @@ if __name__ == "__main__":
     lr_monitor = LearningRateMonitor(logging_interval='step')
 
     grpo_trainer = Trainer(
-        max_steps=4,
+        max_steps=8,
         accelerator="auto",
         precision="bf16",
         callbacks=[lr_monitor],

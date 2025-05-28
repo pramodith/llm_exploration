@@ -12,7 +12,9 @@ def correct_answer_reward(answers: List[str], reference_answer: List[str]):
     Returns:
         List[float]: The correct answer reward.
     """
-    return [1.0 if answer == reference_answer else 0.0 for answer in answers]
+    matches = [re.match(r"(?is).*answer.*(\d+)", answer) for answer in answers]
+    extracted_answer = [match.group(1) if match else "" for match in matches]
+    return [1.0 if answer == reference_answer else 0.0 for answer in extracted_answer]
 
 def format_reward(answers: List[str], reference_format_regex: str, per_group_reward: float = 0.1):
     """
