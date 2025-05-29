@@ -312,6 +312,10 @@ class SimpleGRPOModule(pl.LightningModule):
         logger.info(f"Sampled responses: {completions[0][0]}")
         correct_answer_rewards, format_rewards = self.compute_rewards(completions, batch["answer"])
 
+        # Log total rewards per step
+        total_rewards = (correct_answer_rewards + format_rewards).sum().item()
+        self.log("train/total_rewards", total_rewards, on_step=True, on_epoch=False, prog_bar=True, logger=True)
+
         advantage_scores = self.compute_advantage_score(correct_answer_rewards + format_rewards)
         logger.info(f"Correct answer rewards: {correct_answer_rewards.mean(dim=1)}")
         logger.info(f"Format rewards: {format_rewards.mean(dim=1)}")
@@ -388,4 +392,3 @@ if __name__ == "__main__":
         train_dataloaders=train_dataloader, 
         val_dataloaders=test_dataloader
     )
-    

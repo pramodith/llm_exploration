@@ -6,3 +6,5 @@ __pycache__
 launch.json
 .log
 *.egg-info
+.vscode
+*logs
