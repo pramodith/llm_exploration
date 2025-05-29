@@ -458,7 +458,7 @@ if __name__ == "__main__":
     grpo_trainer = Trainer(
         max_steps=100,
         accelerator="auto",
-        precision="bf16",
+        precision="16",
         callbacks=[lr_monitor, checkpointer],
         enable_progress_bar=True,
         enable_model_summary=True,
