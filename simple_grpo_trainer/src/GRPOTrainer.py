@@ -60,6 +60,7 @@ class SimpleGRPOModule(pl.LightningModule):
             torch_dtype="auto", 
             device_map="auto"
         )
+        self.policy_model.train()        
         self.reference_model.eval()
         self.num_responses_per_example = num_responses_per_example
         self.top_k = top_k
@@ -72,6 +73,7 @@ class SimpleGRPOModule(pl.LightningModule):
         self.learning_rate = learning_rate
         self.max_steps = max_steps
         self._step = 0
+        # Disable dropout after setting the model to train mode
         self._disable_dropout()
     
     def _get_completion_log_prob_scores(

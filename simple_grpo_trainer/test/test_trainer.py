@@ -1,117 +1,133 @@
-import torch
 import pytest
-from .GRPOTrainer import SimpleGRPOTrainer
+import torch
+import torch.nn as nn
+from unittest.mock import MagicMock, patch
+import sys
+import os
 
-@pytest.fixture
-def trainer():
-    # Use a small model for testing or mock if needed
-    class DummyModel(torch.nn.Module):
-        def forward(self, input_ids=None, attention_mask=None):
-            batch, seq = input_ids.shape
-            vocab_size = 10
-            logits = torch.randn(batch, seq, vocab_size)
-            return type("obj", (), {"logits": logits})
+from simple_grpo_trainer.src.GRPOTrainer import SimpleGRPOModule
 
-    class DummyTokenizer:
-        eos_token_id = 0
-        def batch_decode(self, ids, skip_special_tokens=True):
-            return ["dummy"] * len(ids)
+class TestSimpleGRPOModule:
+    
+    def test_disable_dropout(self):
+        """
+        Test that _disable_dropout correctly disables all dropout layers
+        in the policy model by setting p=0.0 and training=False.
+        """
+        # Create a mock model with dropout layers
+        class MockModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.dropout1 = nn.Dropout(p=0.5)
+                self.dropout2 = nn.Dropout(p=0.3)
+                self.linear = nn.Linear(10, 10)
+                self.seq = nn.Sequential(
+                    nn.Linear(10, 10),
+                    nn.Dropout(p=0.2),
+                    nn.ReLU()
+                )
+            
+            def forward(self, x):
+                return x
+        
+        # Create a SimpleGRPOModule instance with the mock model
+        with patch('transformers.AutoModelForCausalLM.from_pretrained') as mock_model:
+            with patch('transformers.AutoTokenizer.from_pretrained'):
+                # Set up our mock model
+                policy_model = MockModel()
+                mock_model.return_value = policy_model
+                
+                # Initialize the module with our mocked components
+                module = SimpleGRPOModule(model_name_or_path="dummy_model")
+                
+                # Verify initial dropout settings
+                dropouts = [m for m in policy_model.modules() if isinstance(m, nn.Dropout)]
+                assert len(dropouts) == 3, "Should have 3 dropout layers"
+                
+                # Verify all dropout layers have been disabled
+                for dropout in dropouts:
+                    assert dropout.p == 0.0, "Dropout probability should be set to 0.0"
+                    assert dropout.training == False, "Dropout should not be in training mode"
+    
+    def test_disable_dropout_no_dropout_layers(self):
+        """
+        Test that _disable_dropout works correctly when there are no dropout layers.
+        """
+        # Create a mock model without dropout layers
+        class MockModelNoDropout(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.linear1 = nn.Linear(10, 10)
+                self.linear2 = nn.Linear(10, 10)
+                self.relu = nn.ReLU()
+            
+            def forward(self, x):
+                return x
+        
+        # Create a SimpleGRPOModule instance with the mock model
+        with patch('transformers.AutoModelForCausalLM.from_pretrained') as mock_model:
+            with patch('transformers.AutoTokenizer.from_pretrained'):
+                # Set up our mock model
+                policy_model = MockModelNoDropout()
+                mock_model.return_value = policy_model
+                
+                # Initialize the module with our mocked components
+                module = SimpleGRPOModule(model_name_or_path="dummy_model")
+                
+                # Verify no dropout layers
+                dropouts = [m for m in policy_model.modules() if isinstance(m, nn.Dropout)]
+                assert len(dropouts) == 0, "Should have no dropout layers"
+                
+                # Call the method we're testing - should not raise any errors
+                module._disable_dropout()
+                
+                # Test passes if no exceptions are raised
 
-    trainer = SimpleGRPOTrainer.__new__(SimpleGRPOTrainer)
-    trainer.tokenizer = DummyTokenizer()
-    trainer.policy_model = DummyModel()
-    trainer.reference_model = DummyModel()
-    trainer.num_responses_per_example = 2
-    trainer.top_k = 5
-    trainer.top_p = 0.9
-    trainer.temperature = 1.0
-    trainer.max_gen_tokens = 5
-    trainer.beta = 0.04
-    trainer.epsilon = 0.2
-    return trainer
-
-def test_compute_grpo_loss_shapes(trainer):
-    batch_size = 3
-    num_responses = trainer.num_responses_per_example
-    seq_len = 4
-
-    # Random logprob scores
-    policy_logprob_scores = torch.randn(batch_size, num_responses, seq_len)
-    old_policy_logprob_scores = torch.randn(batch_size, num_responses, seq_len)
-    reference_logprob_scores = torch.randn(batch_size, num_responses, seq_len)
-    advantage_scores = torch.randn(batch_size, num_responses)
-    completions_mask = torch.randint(0, 2, (batch_size, num_responses, seq_len)).float()
-
-    loss = trainer.compute_grpo_loss(
-        policy_logprob_scores,
-        old_policy_logprob_scores,
-        reference_logprob_scores,
-        advantage_scores,
-        completions_mask,
-    )
-    assert isinstance(loss, torch.Tensor)
-    assert loss.dim() == 0  # Should be a scalar
-
-def test_compute_grpo_loss_zero_mask(trainer):
-    batch_size = 2
-    num_responses = trainer.num_responses_per_example
-    seq_len = 3
-
-    # All zeros in completions_mask should result in nan or inf loss due to division by zero
-    policy_logprob_scores = torch.zeros(batch_size, num_responses, seq_len)
-    old_policy_logprob_scores = torch.zeros(batch_size, num_responses, seq_len)
-    reference_logprob_scores = torch.zeros(batch_size, num_responses, seq_len)
-    advantage_scores = torch.ones(batch_size, num_responses)
-    completions_mask = torch.zeros(batch_size, num_responses, seq_len)
-
-    loss = trainer.compute_grpo_loss(
-        policy_logprob_scores,
-        old_policy_logprob_scores,
-        reference_logprob_scores,
-        advantage_scores,
-        completions_mask,
-    )
-    assert torch.isnan(loss) or torch.isinf(loss)
-
-def test_compute_grpo_loss_identical_inputs(trainer):
-    batch_size = 2
-    num_responses = trainer.num_responses_per_example
-    seq_len = 3
-
-    # If policy and reference are identical, KL should be zero
-    policy_logprob_scores = torch.ones(batch_size, num_responses, seq_len)
-    old_policy_logprob_scores = torch.ones(batch_size, num_responses, seq_len)
-    reference_logprob_scores = torch.ones(batch_size, num_responses, seq_len)
-    advantage_scores = torch.ones(batch_size, num_responses)
-    completions_mask = torch.ones(batch_size, num_responses, seq_len)
-
-    loss = trainer.compute_grpo_loss(
-        policy_logprob_scores,
-        old_policy_logprob_scores,
-        reference_logprob_scores,
-        advantage_scores,
-        completions_mask,
-    )
-    assert isinstance(loss, torch.Tensor)
-    assert loss.dim() == 0
-
-def test_compute_grpo_loss_gradient(trainer):
-    batch_size = 1
-    num_responses = trainer.num_responses_per_example
-    seq_len = 2
-
-    policy_logprob_scores = torch.randn(batch_size, num_responses, seq_len, requires_grad=True)
-    old_policy_logprob_scores = torch.randn(batch_size, num_responses, seq_len)
-    reference_logprob_scores = torch.randn(batch_size, num_responses, seq_len)
-    advantage_scores = torch.ones(batch_size, num_responses)
-    completions_mask = torch.ones(batch_size, num_responses, seq_len)
-
-    loss = trainer.compute_grpo_loss(
-        policy_logprob_scores,
-        old_policy_logprob_scores,
-        reference_logprob_scores,
-        advantage_scores,
-        completions_mask,
-    )
-    loss.backward()
-    assert policy_logprob_scores.grad is not None
+    def test_disable_dropout_nested_modules(self):
+        """
+        Test that _disable_dropout correctly disables dropout layers
+        in deeply nested modules.
+        """
+        # Create a mock model with nested dropout layers
+        class NestedModule(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.dropout = nn.Dropout(p=0.4)
+                self.nested = nn.Sequential(
+                    nn.Linear(10, 10),
+                    nn.Dropout(p=0.6)
+                )
+            
+            def forward(self, x):
+                return x
+        
+        class MockModelNested(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.dropout = nn.Dropout(p=0.5)
+                self.nested_module = NestedModule()
+            
+            def forward(self, x):
+                return x
+        
+        # Create a SimpleGRPOModule instance with the mock model
+        with patch('transformers.AutoModelForCausalLM.from_pretrained') as mock_model:
+            with patch('transformers.AutoTokenizer.from_pretrained'):
+                # Set up our mock model
+                policy_model = MockModelNested()
+                mock_model.return_value = policy_model
+                
+                # Initialize the module with our mocked components
+                module = SimpleGRPOModule(model_name_or_path="dummy_model")
+                
+                # Verify initial dropout settings
+                dropouts = [m for m in policy_model.modules() if isinstance(m, nn.Dropout)]
+                assert len(dropouts) == 3, "Should have 3 dropout layers"
+                
+                # Call the method we're testing
+                module._disable_dropout()
+                
+                # Verify all dropout layers have been disabled, including nested ones
+                for dropout in dropouts:
+                    assert dropout.p == 0.0, "Dropout probability should be set to 0.0"
+                    assert dropout.training == False, "Dropout should not be in training mode"

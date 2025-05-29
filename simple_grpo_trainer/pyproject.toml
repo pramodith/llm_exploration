@@ -10,6 +10,7 @@ dependencies = [
     "hf-xet>=1.1.2",
     "lightning>=2.5.1.post0",
     "loguru>=0.7.3",
+    "pytest>=8.3.5",
     "ruff>=0.11.11",
     "transformers>=4.52.3",
     "trl>=0.17.0",
