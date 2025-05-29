@@ -15,21 +15,24 @@ class TestRewards(unittest.TestCase):
         answers = ["The answer is 24"]
         reference_answer = ["42"]
         rewards = correct_answer_reward(answers, reference_answer)
-        self.assertEqual(rewards, [0.0])
+        # Extracted answer is "24", which is not equal to ref, so 0.25
+        self.assertEqual(rewards, [0.25])
 
     def test_correct_answer_reward_multiple_answers(self):
         """Test correct_answer_reward with multiple answers."""
-        answers = ["The answer is 42", "The answer is 24", "Answer: 42"]
-        reference_answer = ["42", "35", "42"]
+        answers = ["The answer is 42", "The answer is 24", "Answer: 42", "No number here"]
+        reference_answer = ["42", "35", "42", "100"]
         rewards = correct_answer_reward(answers, reference_answer)
-        self.assertEqual(rewards, [1.0, 0.0, 1.0])
+        # 1.0 (match), 0.0 (wrong number), 1.0 (match), 0.25 (no number extracted)
+        self.assertEqual(rewards, [1.0, 0.25, 1.0, 0.0])
 
     def test_correct_answer_reward_no_number(self):
         """Test correct_answer_reward when there's no number in the answer."""
         answers = ["The answer is unknown"]
         reference_answer = ["42"]
         rewards = correct_answer_reward(answers, reference_answer)
-        self.assertEqual(rewards, [0.0])
+        # Now, if extraction fails, extracted_answer will be ""
+        self.assertEqual(rewards, [0.25])
 
     def test_correct_answer_reward_case_insensitive(self):
         """Test correct_answer_reward is case insensitive."""
@@ -37,6 +40,13 @@ class TestRewards(unittest.TestCase):
         reference_answer = ["42", "42"]
         rewards = correct_answer_reward(answers, reference_answer)
         self.assertEqual(rewards, [1.0, 1.0])
+
+    def test_correct_answer_reward_blank_extracted_answer(self):
+        """Test correct_answer_reward gives 0.25 for blank extracted answer."""
+        answers = [""]
+        reference_answer = ["42"]
+        rewards = correct_answer_reward(answers, reference_answer)
+        self.assertEqual(rewards, [0.25])
 
     def test_format_reward_full_match(self):
         """Test format_reward when there's a full match."""

@@ -210,7 +210,7 @@ class SimpleGRPOModule(pl.LightningModule):
         )
         format_rewards = format_reward(
             answers=sampled_responses,
-            # reference_format_regex=r"(<think>)\w+(</think>)\s*(<answer>)(\d+)(</answer>)",
+            reference_format_regex=r"(<think>)\w+(</think>)\s*(<answer>)(\d+)(</answer>)",
             reference_format_regex=r"(?is).*(answer).*(\d+)"
         )
         correct_answer_rewards = torch.tensor(correct_answer_rewards).view(-1, self.num_responses_per_example)
@@ -362,7 +362,7 @@ class SimpleGRPOModule(pl.LightningModule):
 
 if __name__ == "__main__":
     grpo_module = SimpleGRPOModule(
-        model_name_or_path="HuggingFaceTB/SmolLM2-135M-Instruct",
+        model_name_or_path="HuggingFaceTB/SmolLM2-360M-Instruct",
         num_responses_per_example=4,
         top_k=50,
         top_p=0.9,

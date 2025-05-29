@@ -12,9 +12,23 @@ def correct_answer_reward(answers: List[str], reference_answer: List[str]):
     Returns:
         List[float]: The correct answer reward.
     """
-    matches = [re.match(r"(?is).*answer[\D]*(\d+)", answer) for answer in answers]
+    #matches = [re.match(r"(?is).*answer[\D]*(\d+)", answer) for answer in answers]
+    
+    matches = []
+    for answer in answers:
+        match = re.match(r"(<think>)\w+(</think>)\s*(<answer>)(\d+)(</answer>)", answer)
+        if match:
+            matches.append(match.group(4))
+        else:
+            match = re.match(r"(?is).*answer[\D]*(\d+)", answer)
+            if match:
+                matches.append(match.group(1))
+            else:
+                matches.append(None)
     extracted_answer = [match.group(1) if match else "" for match in matches]
-    return [1.0 if answer == ref_answer else 0.0 for answer, ref_answer in zip(extracted_answer, reference_answer)]
+    return [1.0 if answer == ref_answer else 0.25 if answer == "" else 0.0 
+        for answer, ref_answer in zip(extracted_answer, reference_answer)
+    ]
 
 def format_reward(answers: List[str], reference_format_regex: str, per_group_reward: float = 0.1):
     """
