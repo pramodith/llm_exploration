@@ -324,3 +324,127 @@ class TestSimpleGRPOModule:
                         out, expected_logits, rtol=1e-4, atol=1e-4,
                         msg=f"{out} does not match expected output {expected_logits} for model type {model_type}"
                     )
+    
+    def test_compute_grpo_loss_basic(self):
+        """
+        Test compute_grpo_loss returns a scalar and computes expected values for simple inputs.
+        """
+        with patch('transformers.AutoModelForCausalLM.from_pretrained'):
+            with patch('transformers.AutoTokenizer.from_pretrained'):
+                module = SimpleGRPOModule(model_name_or_path="dummy_model", num_responses_per_example=2)
+                module.beta = 0.5
+                module.epsilon = 0.2
+                # Simple deterministic tensors
+                policy_logprob_scores = torch.zeros((1, 2, 3))
+                old_policy_logprob_scores = torch.zeros((1, 2, 3))
+                reference_logprob_scores = torch.zeros((1, 2, 3))
+                advantage_scores = torch.ones((1, 2))
+                completions_mask = torch.ones((1, 2, 3))
+                loss = module.compute_grpo_loss(
+                    policy_logprob_scores,
+                    old_policy_logprob_scores,
+                    reference_logprob_scores,
+                    advantage_scores,
+                    completions_mask
+                )
+                assert loss.shape == (), "Loss should be a scalar"
+                assert torch.isfinite(loss), "Loss should be finite"
+
+    def test_compute_grpo_loss_kl_loss_only(self):
+        """
+        Test that completions_mask properly masks out tokens.
+        """
+        with patch('transformers.AutoModelForCausalLM.from_pretrained'):
+            with patch('transformers.AutoTokenizer.from_pretrained'):
+                module = SimpleGRPOModule(model_name_or_path="dummy_model", num_responses_per_example=2)
+                module.beta = 1.0
+                module.epsilon = 1.0
+                # Only some tokens are valid
+                policy_logprob_scores = torch.zeros((1, 2, 3))
+                old_policy_logprob_scores = torch.zeros((1, 2, 3))
+                reference_logprob_scores = torch.ones((1, 2, 3))
+                advantage_scores = torch.zeros((1, 2))
+                completions_mask = torch.ones((1, 2, 3))
+                loss = module.compute_grpo_loss(
+                    policy_logprob_scores,
+                    old_policy_logprob_scores,
+                    reference_logprob_scores,
+                    advantage_scores,
+                    completions_mask
+                )
+
+                expected_loss = - (torch.exp(torch.ones((1, 3))) - 2) / 3
+                expected_loss = expected_loss.sum(dim=-1).mean()
+                assert loss.shape == (), "Loss should be a scalar"
+                assert torch.isfinite(loss), "Loss should be finite"
+                assert torch.allclose(loss, expected_loss, rtol=1e-4, atol=1e-4), \
+                    f"Expected loss {expected_loss}, got {loss}"
+    
+    def test_compute_grpo_loss_policy_loss_only(self):
+        """
+        Test that completions_mask properly masks out tokens.
+        """
+        with patch('transformers.AutoModelForCausalLM.from_pretrained'):
+            with patch('transformers.AutoTokenizer.from_pretrained'):
+                module = SimpleGRPOModule(model_name_or_path="dummy_model", num_responses_per_example=2)
+                module.beta = 0
+                module.epsilon = 1.0
+                # Only some tokens are valid
+                policy_logprob_scores = torch.ones((1, 2, 3))
+                old_policy_logprob_scores = torch.zeros((1, 2, 3))
+                reference_logprob_scores = torch.ones((1, 2, 3))
+                advantage_scores = torch.ones((1, 2))
+                completions_mask = torch.ones((1, 2, 3))
+                loss = module.compute_grpo_loss(
+                    policy_logprob_scores,
+                    old_policy_logprob_scores,
+                    reference_logprob_scores,
+                    advantage_scores,
+                    completions_mask
+                )
+                """
+                policy_ratio would be: exp
+                clips would be 0, 2
+                exp > 2 so we clip to 2
+                """
+                expected_loss = torch.ones((1, 2, 3)) + 1
+                # divide by completion length
+                expected_loss = (expected_loss/3).sum(dim=-1).mean()
+                assert loss.shape == (), "Loss should be a scalar"
+                assert torch.isfinite(loss), "Loss should be finite"
+                assert torch.allclose(loss, expected_loss, rtol=1e-4, atol=1e-4), \
+                    f"Expected loss {expected_loss}, got {loss}"
+                
+                module.epsilon = 2
+                loss = module.compute_grpo_loss(
+                    policy_logprob_scores,
+                    old_policy_logprob_scores,
+                    reference_logprob_scores,
+                    advantage_scores,
+                    completions_mask
+                )
+                """
+                policy_ratio would be: exp
+                clips would be -1, 3
+                exp < 3 so we keep exp as policy loss
+                """
+
+                expected_loss = torch.exp(torch.ones(1, 2, 3))
+                expected_loss = (expected_loss/3).sum(dim=-1).mean()
+                torch.testing.assert_close(
+                    loss, expected_loss, rtol=1e-4, atol=1e-4,
+                    msg=f"Expected loss {expected_loss}, got {loss}"
+                )
+                # Test with advantage scores > 1
+                advantage_scores = torch.ones((1, 2)) * 2
+                loss = module.compute_grpo_loss(
+                    policy_logprob_scores,
+                    old_policy_logprob_scores,
+                    reference_logprob_scores,
+                    advantage_scores,
+                    completions_mask
+                )
+                torch.testing.assert_close(
+                    loss, expected_loss*2, rtol=1e-4, atol=1e-4,
+                    msg=f"Expected loss {expected_loss}, got {loss}"
+                ) 
