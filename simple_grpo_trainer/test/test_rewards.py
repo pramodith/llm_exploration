@@ -32,7 +32,7 @@ class TestRewards(unittest.TestCase):
         reference_answer = ["42"]
         rewards = correct_answer_reward(answers, reference_answer)
         # Now, if extraction fails, extracted_answer will be ""
-        self.assertEqual(rewards, [0.25])
+        self.assertEqual(rewards, [0.0])
 
     def test_correct_answer_reward_case_insensitive(self):
         """Test correct_answer_reward is case insensitive."""
@@ -40,13 +40,6 @@ class TestRewards(unittest.TestCase):
         reference_answer = ["42", "42"]
         rewards = correct_answer_reward(answers, reference_answer)
         self.assertEqual(rewards, [1.0, 1.0])
-
-    def test_correct_answer_reward_blank_extracted_answer(self):
-        """Test correct_answer_reward gives 0.25 for blank extracted answer."""
-        answers = [""]
-        reference_answer = ["42"]
-        rewards = correct_answer_reward(answers, reference_answer)
-        self.assertEqual(rewards, [0.25])
 
     def test_format_reward_full_match(self):
         """Test format_reward when there's a full match."""

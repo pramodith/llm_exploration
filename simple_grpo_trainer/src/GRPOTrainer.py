@@ -2,12 +2,13 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.optimization import get_linear_schedule_with_warmup
 import lightning as pl
 from lightning.pytorch import Trainer
-from lightning.pytorch.callbacks import LearningRateMonitor
+from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 from trl import GRPOTrainer
 import torch
 from rewards import correct_answer_reward, format_reward
 from loguru import logger
 from typing import List
+from peft import get_peft_model, LoraConfig
 
 import copy
 
@@ -27,9 +28,14 @@ class SimpleGRPOModule(pl.LightningModule):
         max_gen_tokens: int = 128, 
         beta: float = 0.04,
         epsilon: float = 0.2,
-        num_steps_to_refresh_old_policy: int = 2,
+        num_steps_to_refresh_old_policy: int = 16,
         learning_rate: float = 1e-6,
-        max_steps: int = 1000
+        max_steps: int = 1000,
+        is_peft: bool = False,
+        lora_rank: int = 8,
+        lora_alpha: int = 16,
+        lora_dropout: float = 0.1,
+        lora_target_modules: List[str] = ["q_proj", "v_proj"],
     ):
         """
         Initialize the GRPOTrainer with a model.
@@ -55,11 +61,24 @@ class SimpleGRPOModule(pl.LightningModule):
             torch_dtype="auto", 
             device_map="auto"
         )
+        if is_peft:
+            lora_config = LoraConfig(
+                r=lora_rank,
+                lora_alpha=lora_alpha,
+                lora_dropout=lora_dropout,
+                target_modules=lora_target_modules,
+            )
+            self.policy_model = get_peft_model(self.policy_model, lora_config)
+
         self.reference_model = AutoModelForCausalLM.from_pretrained(
             model_name_or_path, 
             torch_dtype="auto", 
             device_map="auto"
         )
+        # Make all parameters of reference model non traininable
+        for param in self.reference_model.parameters():
+            param.requires_grad = False
+
         self.reference_model.eval()
         self.num_responses_per_example = num_responses_per_example
         self.top_k = top_k
@@ -73,7 +92,7 @@ class SimpleGRPOModule(pl.LightningModule):
         self.max_steps = max_steps
         self._step = 0
         # Disable dropout after setting the model to train mode
-        self._disable_dropout()
+        # self._disable_dropout()
     
     def _get_completion_log_prob_scores(
         self, 
@@ -101,6 +120,7 @@ class SimpleGRPOModule(pl.LightningModule):
         prompt_length = prompt_ids.shape[-1]
         prompt_completion_mask = torch.cat([prompt_mask, completions_mask], dim=-1)
         if model_type == ModelType.Active:
+            self.policy_model.train()
             logit_scores = self.policy_model(input_ids = prompt_completion_input, attention_mask = prompt_completion_mask).logits
         elif model_type == ModelType.Old:
             with torch.no_grad():
@@ -210,8 +230,8 @@ class SimpleGRPOModule(pl.LightningModule):
         )
         format_rewards = format_reward(
             answers=sampled_responses,
-            reference_format_regex=r"(<think>)\w+(</think>)\s*(<answer>)(\d+)(</answer>)",
-            reference_format_regex=r"(?is).*(answer).*(\d+)"
+            reference_format_regex=r"(<think>)[\s\S]*?(</think>)[\s\S]*?(<answer>)[\s\D]*(\d+)[\s\D]*(</answer>)",
+            # reference_format_regex=r"(?is).*(answer).*(\d+)"
         )
         correct_answer_rewards = torch.tensor(correct_answer_rewards).view(-1, self.num_responses_per_example)
         format_rewards = torch.tensor(format_rewards).view(-1, self.num_responses_per_example)
@@ -236,6 +256,7 @@ class SimpleGRPOModule(pl.LightningModule):
     
     def on_train_batch_start(self, batch, batch_idx, dataloader_idx=0):
         if self._step % self.num_steps_to_refresh_old_policy == 0:
+            logger.info("Refreshing old policy model")
             self.old_policy_model = copy.deepcopy(self.policy_model)
             self.old_policy_model.eval()
         return super().on_train_batch_start(batch, batch_idx)
@@ -246,7 +267,7 @@ class SimpleGRPOModule(pl.LightningModule):
         We use AdamW optimizer
         """
         optimizer = torch.optim.AdamW(
-            self.policy_model.parameters(), 
+            [p for p in self.policy_model.parameters() if p.requires_grad],
             lr=self.learning_rate, 
             weight_decay=0.0
         )
@@ -289,6 +310,7 @@ class SimpleGRPOModule(pl.LightningModule):
         # all the completions will start from the size of the padded input/prompt
         prompt_end_index = inputs["input_ids"].size(1)
         
+        self.policy_model.eval()
         # Get the completions from the policy model
         sampled_responses = self.policy_model.generate(
             **inputs,
@@ -314,8 +336,6 @@ class SimpleGRPOModule(pl.LightningModule):
 
         # Log total rewards per step
         total_rewards = (correct_answer_rewards + format_rewards).sum().item()
-        self.log("train/total_rewards", total_rewards, on_step=True, on_epoch=False, prog_bar=True, logger=True)
-
         advantage_scores = self.compute_advantage_score(correct_answer_rewards + format_rewards)
         logger.info(f"Correct answer rewards: {correct_answer_rewards.mean(dim=1)}")
         logger.info(f"Format rewards: {format_rewards.mean(dim=1)}")
@@ -351,7 +371,8 @@ class SimpleGRPOModule(pl.LightningModule):
             advantage_scores,
             completions_mask.view(-1, self.num_responses_per_example, completion_ids.shape[-1]),
         )
-        logger.info(f"Loss is {loss.item()}")
+        logger.info(f"Loss is {loss}")
+        self.log_dict({"train_loss": loss, "train_total_rewards": total_rewards})
         return loss
 
     def on_train_batch_end(self, outputs, batch, batch_idx):
@@ -363,25 +384,35 @@ class SimpleGRPOModule(pl.LightningModule):
 if __name__ == "__main__":
     grpo_module = SimpleGRPOModule(
         model_name_or_path="HuggingFaceTB/SmolLM2-360M-Instruct",
-        num_responses_per_example=4,
+        num_responses_per_example=8,
         top_k=50,
         top_p=0.9,
         temperature=0.7,
         max_gen_tokens=512,
-        max_steps=8
+        max_steps=8,
+        num_steps_to_refresh_old_policy=16,
+        is_peft=True
     )
     train_dataset, test_dataset = get_gsm8k_dataset()
     train_dataset = train_dataset.map(tokenize_example, fn_kwargs={"tokenizer": grpo_module.tokenizer})
     test_dataset = test_dataset.map(tokenize_example, fn_kwargs={"tokenizer": grpo_module.tokenizer})
-    train_dataloader = create_dataloader(train_dataset, is_train=False, batch_size=2)
-    test_dataloader = create_dataloader(test_dataset, is_train=False, batch_size=2)
+    train_dataloader = create_dataloader(train_dataset, is_train=False, batch_size=1)
+    test_dataloader = create_dataloader(test_dataset, is_train=False, batch_size=1)
     lr_monitor = LearningRateMonitor(logging_interval='step')
+    checkpointer = ModelCheckpoint(
+        monitor="train_loss",
+        dirpath="lightning_logs",
+        filename="best-checkpoint",
+        save_top_k=1,
+        mode="min",
+        every_n_train_steps=4,
+    )
 
     grpo_trainer = Trainer(
         max_steps=8,
         accelerator="auto",
         precision="bf16",
-        callbacks=[lr_monitor],
+        callbacks=[lr_monitor, checkpointer],
         enable_progress_bar=True,
         enable_model_summary=True,
         log_every_n_steps=1,
@@ -390,5 +421,4 @@ if __name__ == "__main__":
     grpo_trainer.fit(
         model=grpo_module, 
         train_dataloaders=train_dataloader, 
-        val_dataloaders=test_dataloader
     )

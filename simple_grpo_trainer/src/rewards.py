@@ -16,7 +16,7 @@ def correct_answer_reward(answers: List[str], reference_answer: List[str]):
     
     matches = []
     for answer in answers:
-        match = re.match(r"(<think>)\w+(</think>)\s*(<answer>)(\d+)(</answer>)", answer)
+        match = re.match(r"(<think>)[\s\S]*?(</think>)[\s\S]*?(<answer>)[\s\D]*(\d+)[\s\D]*(</answer>)", answer)
         if match:
             matches.append(match.group(4))
         else:
@@ -25,9 +25,9 @@ def correct_answer_reward(answers: List[str], reference_answer: List[str]):
                 matches.append(match.group(1))
             else:
                 matches.append(None)
-    extracted_answer = [match.group(1) if match else "" for match in matches]
-    return [1.0 if answer == ref_answer else 0.25 if answer == "" else 0.0 
-        for answer, ref_answer in zip(extracted_answer, reference_answer)
+
+    return [1.0 if answer == ref_answer else 0.25 if answer is not None else 0.0 
+        for answer, ref_answer in zip(matches, reference_answer)
     ]
 
 def format_reward(answers: List[str], reference_format_regex: str, per_group_reward: float = 0.1):
@@ -43,5 +43,8 @@ def format_reward(answers: List[str], reference_format_regex: str, per_group_rew
         List[float]: The format reward.
     """
     matches = [re.match(reference_format_regex, answer) for answer in answers]
-    return [len([match.group(i) for i in range(1, len(match.groups()) + 1) if match.group(i)]) * per_group_reward if match else 0.0 for match in matches]
+    return [
+            len([match.group(i) for i in range(1, len(match.groups()) + 1) if match.group(i)]) * per_group_reward if match else 0.0 
+            for match in matches
+        ]
     
