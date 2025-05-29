@@ -61,6 +61,7 @@ class SimpleGRPOModule(pl.LightningModule):
         self.policy_model = AutoModelForCausalLM.from_pretrained(
             model_name_or_path, 
         )
+        self.val_num_correct_per_group = []
         if is_peft:
             lora_config = LoraConfig(
                 r=lora_rank,
@@ -419,22 +420,23 @@ class SimpleGRPOModule(pl.LightningModule):
 
         correct_answer_rewards = correct_answer_rewards == 1
         num_correct_per_group = correct_answer_rewards.sum(dim=0)
-        return {"val_num_correct_per_group": num_correct_per_group}
+        self.val_num_correct_per_group.append(num_correct_per_group)
 
-    def on_validation_epoch_end(self, outputs):
-        num_correct_per_group = torch.stack([output["val_num_correct_per_group"] for output in outputs]).sum(dim=0)
+    def on_validation_epoch_end(self):
+        num_correct_per_group = torch.stack(self.val_num_correct_per_group).sum(dim=0)
         logger.info(f"Average number of correct responses: {num_correct_per_group}")
-        self.log("average_num_correct_responses", num_correct_per_group.mean().item())
-        return num_correct_per_group.mean().item()        
+        self.log("average_num_correct_responses", num_correct_per_group.float().mean().item())
+        self.val_num_correct_per_group.clear()
+        return num_correct_per_group.float().mean().item()        
 
 if __name__ == "__main__":
     grpo_module = SimpleGRPOModule(
-        model_name_or_path="HuggingFaceTB/SmolLM2-135M-Instruct",
-        num_responses_per_example=1,
+        model_name_or_path="HuggingFaceTB/SmolLM2-350M-Instruct",
+        num_responses_per_example=2,
         top_k=50,
         top_p=0.9,
         temperature=0.7,
-        max_gen_tokens=512,
+        max_gen_tokens=256,
         max_steps=8,
         num_steps_to_refresh_old_policy=16,
         is_peft=False,
@@ -444,7 +446,7 @@ if __name__ == "__main__":
     train_dataset = train_dataset.map(tokenize_example, fn_kwargs={"tokenizer": grpo_module.tokenizer})
     test_dataset = test_dataset.map(tokenize_example, fn_kwargs={"tokenizer": grpo_module.tokenizer})
     train_dataloader = create_dataloader(train_dataset, is_train=False, batch_size=4)
-    test_dataloader = create_dataloader(test_dataset, is_train=False, batch_size=1)
+    test_dataloader = create_dataloader(test_dataset, is_train=False, batch_size=64)
     lr_monitor = LearningRateMonitor(logging_interval='step')
     checkpointer = ModelCheckpoint(
         monitor="train_loss",
