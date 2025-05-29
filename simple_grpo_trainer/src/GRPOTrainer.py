@@ -60,7 +60,6 @@ class SimpleGRPOModule(pl.LightningModule):
             torch_dtype="auto", 
             device_map="auto"
         )
-        self.policy_model.train()        
         self.reference_model.eval()
         self.num_responses_per_example = num_responses_per_example
         self.top_k = top_k
@@ -115,11 +114,11 @@ class SimpleGRPOModule(pl.LightningModule):
         # We exclude the logit scores for the prompt and the last token 
         # because it corresponds to the next token prediction
         logit_scores = logit_scores[:, prompt_length-1:-1, :]
-        # We only need to keep the logit scores corresponding to the completion tokens
-        logit_scores = torch.gather(logit_scores, dim=-1, index=completion_ids.unsqueeze(-1)).squeeze(-1)
         # Get log_probs to avoid numerical underflow/overflow
         logit_scores = logit_scores / self.temperature
         log_prob_scores = torch.log_softmax(logit_scores, dim=-1)
+        # We only need to keep the logit scores corresponding to the completion tokens
+        log_prob_scores = torch.gather(log_prob_scores, dim=-1, index=completion_ids.unsqueeze(-1)).squeeze(-1)
         return log_prob_scores.view(-1, self.num_responses_per_example, log_prob_scores.shape[-1])
     
     def _disable_dropout(self):
@@ -224,10 +223,11 @@ class SimpleGRPOModule(pl.LightningModule):
         Standardize the rewards. To get the advantage score of each sampled response
 
         Args:
-            rewards (torch.Tensor): The rewards to standardize.
+            rewards (torch.Tensor): The rewards to standardize 
+                of shape (batch_size, num_sampled_responses).
 
         Returns:
-            torch.Tensor: The advantage scores.
+            torch.Tensor: The advantage scores of shape (batch_size, num_sampled_responses).
         """
         mean_rewards = rewards.mean(dim=1).unsqueeze(1)
         std = rewards.std(dim=1).unsqueeze(1)
