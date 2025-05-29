@@ -7,7 +7,7 @@ from trl import GRPOTrainer
 import torch
 from rewards import correct_answer_reward, format_reward
 from loguru import logger
-from typing import List
+from typing import Dict, List
 from peft import get_peft_model, LoraConfig
 
 import copy
@@ -68,7 +68,7 @@ class SimpleGRPOModule(pl.LightningModule):
                 lora_dropout=lora_dropout,
                 target_modules=lora_target_modules,
             )
-            self.policy_model = get_peft_model(policy_model, lora_config)
+            self.policy_model = get_peft_model(self.policy_model, lora_config)
             self.policy_model.print_trainable_parameters()
         elif bottom_k_layers_to_train > 0:
             print(f"Model has {len(self.policy_model.model.layers)} num of layers,\
@@ -295,13 +295,8 @@ class SimpleGRPOModule(pl.LightningModule):
             },
         }
 
-
-    def training_step(self, batch, batch_idx):        
-        # Get the prompts and answers from the batch
-        # The batch is a dictionary with keys "prompt" and "answer"
-        # and values are lists of strings.
-        prompts = [prompt for prompt in batch["prompt"]] 
-        
+    def prepare_inputs(self, batch):
+        prompts = [prompt for prompt in batch["prompt"]]
         inputs = self.tokenizer(
             prompts, 
             return_tensors='pt', 
@@ -311,17 +306,15 @@ class SimpleGRPOModule(pl.LightningModule):
             padding_side='left',
             add_special_tokens=False
         )
-
         inputs = inputs.to(self.device)
-
-        prompt_mask = inputs["attention_mask"]
-        # Since we pad the prompts, 
-        # all the completions will start from the size of the padded input/prompt
-        prompt_end_index = inputs["input_ids"].size(1)
-        
-        self.policy_model.eval()
-        # Get the completions from the policy model
-        sampled_responses = self.policy_model.generate(
+        return inputs
+    
+    def get_responses_from_policy_model(
+        self, 
+        inputs: Dict[str, torch.Tensor], 
+        prompt_end_index: int
+    ):
+        responses = self.policy_model.generate(
             **inputs,
             do_sample=True,
             temperature = self.temperature,
@@ -330,14 +323,31 @@ class SimpleGRPOModule(pl.LightningModule):
             max_new_tokens=self.max_gen_tokens,
             num_return_sequences=self.num_responses_per_example,
         )
-        # Get rid of the prompt tokens in the response
-        completion_ids = sampled_responses[:, prompt_end_index:]
-        completions_mask = self._get_completions_mask(completion_ids)
 
+        # Get rid of the prompt tokens in the response
+        completion_ids = responses[:, prompt_end_index:]
         # Get the rewards for each response
         completions = [self.tokenizer.batch_decode(completion_ids[i*self.num_responses_per_example:(i+1)*self.num_responses_per_example], skip_special_tokens=True) 
-            for i in range(len(batch["prompt"]))]
+            for i in range(len(inputs["input_ids"]))]
         
+        return completions, completion_ids
+
+    def training_step(self, batch, batch_idx):        
+        # Get the prompts and answers from the batch
+        # The batch is a dictionary with keys "prompt" and "answer"
+        # and values are lists of strings.
+        inputs = self.prepare_inputs(batch)
+        prompt_mask = inputs["attention_mask"]
+        # Since we pad the prompts, 
+        # all the completions will start from the size of the padded input/prompt
+        prompt_end_index = inputs["input_ids"].size(1)
+        
+        self.policy_model.eval()
+        # Get the completions from the policy model
+        completions, completion_ids = self.get_responses_from_policy_model(inputs, prompt_end_index)
+        
+        completions_mask = self._get_completions_mask(completion_ids)
+
         logger.info(f"Sample question: {batch['question'][0]}")
         logger.info(f"Sample answer: {batch['answer'][0]}")
         logger.info(f"Sampled responses: {completions[0][0]}")
@@ -395,12 +405,32 @@ class SimpleGRPOModule(pl.LightningModule):
     def on_train_batch_end(self, outputs, batch, batch_idx):
         self._step += 1
         return super().on_train_batch_end(outputs, batch, batch_idx)
+    
+    def validation_step(self, batch, batch_idx):
+        inputs = self.prepare_inputs(batch)
         
+        # Since we pad the prompts, 
+        # all the completions will start from the size of the padded input/prompt
+        prompt_end_index = inputs["input_ids"].size(1)
+        
+        self.policy_model.eval()
+        # Get the completions from the policy model
+        completions, completion_ids = self.get_responses_from_policy_model(inputs, prompt_end_index)
+        correct_answer_rewards, _ = self.compute_rewards(completions, batch["answer"])
 
+        correct_answer_rewards = correct_answer_rewards == 1
+        num_correct_per_group = correct_answer_rewards.sum(dim=0)
+        return {"val_num_correct_per_group": num_correct_per_group}
+
+    def on_validation_epoch_end(self, outputs):
+        num_correct_per_group = torch.stack([output["val_num_correct_per_group"] for output in outputs]).sum(dim=0)
+        logger.info(f"Average number of correct responses: {num_correct_per_group}")
+        self.log("average_num_correct_responses", num_correct_per_group.mean().item())
+        return num_correct_per_group.mean().item()        
 
 if __name__ == "__main__":
     grpo_module = SimpleGRPOModule(
-        model_name_or_path="HuggingFaceTB/SmolLM2-360M-Instruct",
+        model_name_or_path="HuggingFaceTB/SmolLM2-150M-Instruct",
         num_responses_per_example=8,
         top_k=50,
         top_p=0.9,
@@ -408,13 +438,14 @@ if __name__ == "__main__":
         max_gen_tokens=512,
         max_steps=8,
         num_steps_to_refresh_old_policy=16,
-        is_peft=False
+        is_peft=False,
+        bottom_k_layers_to_train=4,
     )
     train_dataset, test_dataset = get_gsm8k_dataset()
     train_dataset = train_dataset.map(tokenize_example, fn_kwargs={"tokenizer": grpo_module.tokenizer})
     test_dataset = test_dataset.map(tokenize_example, fn_kwargs={"tokenizer": grpo_module.tokenizer})
-    train_dataloader = create_dataloader(train_dataset, is_train=False, batch_size=1)
-    test_dataloader = create_dataloader(test_dataset, is_train=False, batch_size=1)
+    train_dataloader = create_dataloader(train_dataset, is_train=False, batch_size=4)
+    test_dataloader = create_dataloader(test_dataset, is_train=False, batch_size=4)
     lr_monitor = LearningRateMonitor(logging_interval='step')
     checkpointer = ModelCheckpoint(
         monitor="train_loss",
@@ -422,11 +453,11 @@ if __name__ == "__main__":
         filename="best-checkpoint",
         save_top_k=1,
         mode="min",
-        every_n_train_steps=4,
+        every_n_train_steps=20,
     )
 
     grpo_trainer = Trainer(
-        max_steps=8,
+        max_steps=100,
         accelerator="auto",
         precision="bf16",
         callbacks=[lr_monitor, checkpointer],
@@ -434,7 +465,12 @@ if __name__ == "__main__":
         enable_model_summary=True,
         log_every_n_steps=1,
     )
-    
+
+    # Pre-training evaluation on the test set
+    print("\n===== Pre-training evaluation on test set =====")
+    pretrain_eval_results = grpo_trainer.validate(model=grpo_module, dataloaders=test_dataloader)
+    print(f"Pre-training evaluation results: {pretrain_eval_results}\n")
+
     grpo_trainer.fit(
         model=grpo_module, 
         train_dataloaders=train_dataloader, 
