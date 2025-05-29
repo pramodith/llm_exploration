@@ -76,8 +76,7 @@ class SimpleGRPOModule(pl.LightningModule):
             for param in self.policy_model.model.layers[:-bottom_k_layers_to_train].parameters():
                 param.requires_grad = False
         
-        self.policy_model = self.policy_model.to("cuda")
-        policy_model = None
+        self.policy_model = self.policy_model.to(self.device)
 
         self.reference_model = AutoModelForCausalLM.from_pretrained(
             model_name_or_path, 
@@ -430,8 +429,8 @@ class SimpleGRPOModule(pl.LightningModule):
 
 if __name__ == "__main__":
     grpo_module = SimpleGRPOModule(
-        model_name_or_path="HuggingFaceTB/SmolLM2-150M-Instruct",
-        num_responses_per_example=8,
+        model_name_or_path="HuggingFaceTB/SmolLM2-135M-Instruct",
+        num_responses_per_example=1,
         top_k=50,
         top_p=0.9,
         temperature=0.7,
@@ -445,7 +444,7 @@ if __name__ == "__main__":
     train_dataset = train_dataset.map(tokenize_example, fn_kwargs={"tokenizer": grpo_module.tokenizer})
     test_dataset = test_dataset.map(tokenize_example, fn_kwargs={"tokenizer": grpo_module.tokenizer})
     train_dataloader = create_dataloader(train_dataset, is_train=False, batch_size=4)
-    test_dataloader = create_dataloader(test_dataset, is_train=False, batch_size=4)
+    test_dataloader = create_dataloader(test_dataset, is_train=False, batch_size=1)
     lr_monitor = LearningRateMonitor(logging_interval='step')
     checkpointer = ModelCheckpoint(
         monitor="train_loss",
