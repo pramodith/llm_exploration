@@ -26,7 +26,7 @@ def correct_answer_reward(answers: List[str], reference_answer: List[str]):
             else:
                 matches.append(None)
 
-    return [1.0 if answer == ref_answer else 0.25 if answer is not None else 0.0 
+    return [1.0 if answer is not None and float(answer) == float(ref_answer) else 0.25 if answer is not None else 0.0 
         for answer, ref_answer in zip(matches, reference_answer)
     ]
 

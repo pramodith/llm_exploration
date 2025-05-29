@@ -36,6 +36,7 @@ class SimpleGRPOModule(pl.LightningModule):
         lora_alpha: int = 16,
         lora_dropout: float = 0.1,
         lora_target_modules: List[str] = ["q_proj", "v_proj"],
+        bottom_k_layers_to_train: int = 4
     ):
         """
         Initialize the GRPOTrainer with a model.
@@ -53,13 +54,12 @@ class SimpleGRPOModule(pl.LightningModule):
             num_steps_to_refresh_old_policy (int): The old policy is updated to match the current policy after the
                 corresponding number of steps.
             learning_rate (float): The learning rate for the optimizer.
+            bottom_k_layers_to_train (int): The number of bottom layers to train.
         """
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
         self.policy_model = AutoModelForCausalLM.from_pretrained(
             model_name_or_path, 
-            torch_dtype="auto", 
-            device_map="auto"
         )
         if is_peft:
             lora_config = LoraConfig(
@@ -68,7 +68,16 @@ class SimpleGRPOModule(pl.LightningModule):
                 lora_dropout=lora_dropout,
                 target_modules=lora_target_modules,
             )
-            self.policy_model = get_peft_model(self.policy_model, lora_config)
+            self.policy_model = get_peft_model(policy_model, lora_config)
+            self.policy_model.print_trainable_parameters()
+        elif bottom_k_layers_to_train > 0:
+            print(f"Model has {len(self.policy_model.model.layers)} num of layers,\
+                we'll only train the last {bottom_k_layers_to_train} layers")
+            for param in self.policy_model.model.layers[:-bottom_k_layers_to_train].parameters():
+                param.requires_grad = False
+        
+        self.policy_model = self.policy_model.to("cuda")
+        policy_model = None
 
         self.reference_model = AutoModelForCausalLM.from_pretrained(
             model_name_or_path, 
@@ -372,6 +381,14 @@ class SimpleGRPOModule(pl.LightningModule):
             completions_mask.view(-1, self.num_responses_per_example, completion_ids.shape[-1]),
         )
         logger.info(f"Loss is {loss}")
+        # Debug: check if loss requires grad and what params are trainable
+        # print('DEBUG: loss.requires_grad:', loss.requires_grad)
+        # trainable_count = 0
+        # for name, param in self.policy_model.named_parameters():
+        #     if param.requires_grad:
+        #         print(f'DEBUG: Trainable param: {name}, shape: {param.shape}')
+        #         trainable_count += 1
+        # print(f'DEBUG: Total trainable parameters: {trainable_count}')
         self.log_dict({"train_loss": loss, "train_total_rewards": total_rewards})
         return loss
 
@@ -391,7 +408,7 @@ if __name__ == "__main__":
         max_gen_tokens=512,
         max_steps=8,
         num_steps_to_refresh_old_policy=16,
-        is_peft=True
+        is_peft=False
     )
     train_dataset, test_dataset = get_gsm8k_dataset()
     train_dataset = train_dataset.map(tokenize_example, fn_kwargs={"tokenizer": grpo_module.tokenizer})
