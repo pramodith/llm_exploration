@@ -131,3 +131,50 @@ class TestSimpleGRPOModule:
                 for dropout in dropouts:
                     assert dropout.p == 0.0, "Dropout probability should be set to 0.0"
                     assert dropout.training == False, "Dropout should not be in training mode"
+                    
+    def test_get_completions_mask(self):
+        """
+        Test that _get_completions_mask correctly identifies valid tokens up to the first EOS token.
+        """
+        # Create a SimpleGRPOModule instance with a mock model
+        with patch('transformers.AutoModelForCausalLM.from_pretrained'):
+            with patch('transformers.AutoTokenizer.from_pretrained') as mock_tokenizer:
+                # Set up our mock tokenizer
+                mock_tokenizer_instance = MagicMock()
+                mock_tokenizer_instance.eos_token_id = 50256  # Common EOS token ID for GPT models
+                mock_tokenizer.return_value = mock_tokenizer_instance
+                
+                # Initialize the module with our mocked components
+                module = SimpleGRPOModule(model_name_or_path="dummy_model")
+                
+                # Test case 1: Single sequence with EOS token
+                test_sequence = torch.tensor([[1, 2, 3, 50256, 5, 6]])
+                expected_mask = torch.tensor([[1, 1, 1, 1, 0, 0]]).int()
+                mask = module._get_completions_mask(test_sequence)
+                assert torch.all(mask == expected_mask), f"Expected {expected_mask}, got {mask}"
+                
+                # Test case 2: Multiple sequences with EOS tokens at different positions
+                test_sequences = torch.tensor([
+                    [1, 2, 50256, 4, 5, 6],
+                    [1, 2, 3, 4, 50256, 6],
+                    [1, 2, 3, 4, 5, 50256]
+                ])
+                expected_masks = torch.tensor([
+                    [1, 1, 1, 0, 0, 0],
+                    [1, 1, 1, 1, 1, 0],
+                    [1, 1, 1, 1, 1, 1]
+                ]).int()
+                masks = module._get_completions_mask(test_sequences)
+                assert torch.all(masks == expected_masks), f"Expected {expected_masks}, got {masks}"
+                
+                # Test case 3: Sequence with no EOS token
+                test_sequence_no_eos = torch.tensor([[1, 2, 3, 4, 5, 6]])
+                expected_mask_no_eos = torch.tensor([[1, 1, 1, 1, 1, 1]]).int()
+                mask_no_eos = module._get_completions_mask(test_sequence_no_eos)
+                assert torch.all(mask_no_eos == expected_mask_no_eos), f"Expected {expected_mask_no_eos}, got {mask_no_eos}"
+                
+                # Test case 4: Sequence with multiple EOS tokens
+                test_sequence_multi_eos = torch.tensor([[1, 50256, 3, 50256, 5, 6]])
+                expected_mask_multi_eos = torch.tensor([[1, 1, 0, 0, 0, 0]]).int()
+                mask_multi_eos = module._get_completions_mask(test_sequence_multi_eos)
+                assert torch.all(mask_multi_eos == expected_mask_multi_eos), f"Expected {expected_mask_multi_eos}, got {mask_multi_eos}"
