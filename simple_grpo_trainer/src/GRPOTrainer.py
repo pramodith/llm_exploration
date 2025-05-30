@@ -1,4 +1,5 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from vllm import LLM, SamplingParams
 from transformers.optimization import get_linear_schedule_with_warmup
 import lightning as pl
 from lightning.pytorch import Trainer
@@ -79,16 +80,13 @@ class SimpleGRPOModule(pl.LightningModule):
         
         self.policy_model = self.policy_model.to(self.device)
 
-        self.reference_model = AutoModelForCausalLM.from_pretrained(
-            model_name_or_path, 
-            torch_dtype="auto", 
-            device_map="auto"
+        # Use local vllm LLM engine for reference model
+        self.reference_model = LLM(
+            model=model_name_or_path, 
+            gpu_memory_utilization=0.15, 
+            max_seq_len_to_capture=800
         )
-        # Make all parameters of reference model non traininable
-        for param in self.reference_model.parameters():
-            param.requires_grad = False
 
-        self.reference_model.eval()
         self.num_responses_per_example = num_responses_per_example
         self.top_k = top_k
         self.top_p = top_p
@@ -135,9 +133,23 @@ class SimpleGRPOModule(pl.LightningModule):
             with torch.no_grad():
                 logit_scores = self.old_policy_model(input_ids = prompt_completion_input, attention_mask = prompt_completion_mask).logits
         elif model_type == ModelType.Reference:
-            # We do not want to compute gradients for the reference model
-            with torch.no_grad():
-                logit_scores = self.reference_model(input_ids = prompt_completion_input, attention_mask = prompt_completion_mask).logits
+            # Use local vllm engine for reference model inference
+            sampling_params = SamplingParams(
+                max_tokens=1,
+                prompt_logprobs=1, # set to 1 for prompt token logprobs
+                enable_prefix_caching=True
+            )
+            outputs = self.reference_model.generate(
+                prompt_token_ids=prompt_completion_input,
+                sampling_params=sampling_params,
+                use_tqdm=False
+            )
+            # Extract logprobs for prompt tokens if needed
+            # Here, we keep the logits for compatibility with the rest of the method
+            logit_scores = torch.stack([
+                torch.tensor(out.outputs[0].logits) for out in outputs
+            ])
+            # If you want to use logprobs for prompt tokens, access out.prompt_logprobs
         
         # Logit scores are of shape (batch_size * num_responses_per_example, seq_len + 1, vocab_size)
         # We exclude the logit scores for the prompt and the last token 
@@ -431,12 +443,12 @@ class SimpleGRPOModule(pl.LightningModule):
 
 if __name__ == "__main__":
     grpo_module = SimpleGRPOModule(
-        model_name_or_path="HuggingFaceTB/SmolLM2-350M-Instruct",
-        num_responses_per_example=2,
+        model_name_or_path="HuggingFaceTB/SmolLM2-135M-Instruct",
+        num_responses_per_example=4,
         top_k=50,
         top_p=0.9,
         temperature=0.7,
-        max_gen_tokens=256,
+        max_gen_tokens=64,
         max_steps=8,
         num_steps_to_refresh_old_policy=16,
         is_peft=False,
@@ -445,8 +457,8 @@ if __name__ == "__main__":
     train_dataset, test_dataset = get_gsm8k_dataset()
     train_dataset = train_dataset.map(tokenize_example, fn_kwargs={"tokenizer": grpo_module.tokenizer})
     test_dataset = test_dataset.map(tokenize_example, fn_kwargs={"tokenizer": grpo_module.tokenizer})
-    train_dataloader = create_dataloader(train_dataset, is_train=False, batch_size=4)
-    test_dataloader = create_dataloader(test_dataset, is_train=False, batch_size=64)
+    train_dataloader = create_dataloader(train_dataset, is_train=False, batch_size=1)
+    test_dataloader = create_dataloader(test_dataset, is_train=False, batch_size=32)
     lr_monitor = LearningRateMonitor(logging_interval='step')
     checkpointer = ModelCheckpoint(
         monitor="train_loss",
@@ -468,9 +480,9 @@ if __name__ == "__main__":
     )
 
     # Pre-training evaluation on the test set
-    print("\n===== Pre-training evaluation on test set =====")
-    pretrain_eval_results = grpo_trainer.validate(model=grpo_module, dataloaders=test_dataloader)
-    print(f"Pre-training evaluation results: {pretrain_eval_results}\n")
+    # print("\n===== Pre-training evaluation on test set =====")
+    # pretrain_eval_results = grpo_trainer.validate(model=grpo_module, dataloaders=test_dataloader)
+    # print(f"Pre-training evaluation results: {pretrain_eval_results}\n")
 
     grpo_trainer.fit(
         model=grpo_module, 
