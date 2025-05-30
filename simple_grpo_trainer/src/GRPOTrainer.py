@@ -6,7 +6,7 @@ from lightning.pytorch import Trainer
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 from trl import GRPOTrainer
 import torch
-from rewards import correct_answer_reward, format_reward
+from rewards import correct_answer_reward, format_reward, length_reward
 from loguru import logger
 from typing import Dict, List
 from peft import get_peft_model, LoraConfig
@@ -21,7 +21,8 @@ reference_model = LLM(
     model="HuggingFaceTB/SmolLM2-135M-Instruct", 
     gpu_memory_utilization=0.15, 
     max_seq_len_to_capture=800,
-    enable_prefix_caching=True
+    enable_prefix_caching=True,
+    dtype='float16',
 )
 
 logger.add("grpo_trainer.log", rotation="10 MB")
@@ -126,15 +127,16 @@ class SimpleGRPOModule(pl.LightningModule):
             is_policy_model (bool): Whether to use the policy model.
         """
         prompt_completion_input = torch.cat([prompt_ids, completion_ids], dim=-1)
-        print(prompt_completion_input.shape)
         prompt_length = prompt_ids.shape[-1]
         prompt_completion_mask = torch.cat([prompt_mask, completions_mask], dim=-1)
         if model_type == ModelType.Active:
             self.policy_model.train()
             logit_scores = self.policy_model(input_ids = prompt_completion_input, attention_mask = prompt_completion_mask).logits
+            logit_scores = logit_scores[:, :-1, :]
         elif model_type == ModelType.Old:
             with torch.no_grad():
                 logit_scores = self.old_policy_model(input_ids = prompt_completion_input, attention_mask = prompt_completion_mask).logits
+            logit_scores = logit_scores[:, :-1, :]
         elif model_type == ModelType.Reference:
             # Use local vllm engine for reference model inference
             sampling_params = SamplingParams(
@@ -155,17 +157,25 @@ class SimpleGRPOModule(pl.LightningModule):
                     for key, val in logprob_dict.items():
                         logit_scores[-1].append(val.logprob)
             logit_scores = torch.tensor(logit_scores, dtype=torch.float16).to(self.device)
-            print(logit_scores.shape)
-            assert False
-                    
-            # If you want to use logprobs for prompt tokens, access out.prompt_logprobs
         
-        # Get log_probs to avoid numerical underflow/overflow
-        logit_scores = logit_scores / self.temperature
-        log_prob_scores = torch.log_softmax(logit_scores, dim=-1)
-        # We only need to keep the logit scores corresponding to the completion tokens
-        log_prob_scores = torch.gather(log_prob_scores, dim=-1, index=completion_ids.unsqueeze(-1)).squeeze(-1)
-        return log_prob_scores.view(-1, self.num_responses_per_example, log_prob_scores.shape[-1])
+        if model_type != ModelType.Reference:
+            # If you want to use logprobs for prompt tokens, access out.prompt_logprobs
+            # Logit scores are of shape (batch_size * num_responses_per_example, seq_len + 1, vocab_size)
+            # We exclude the logit scores for the prompt and the last token 
+            # because it corresponds to the next token prediction
+            logit_scores = logit_scores[:, prompt_length-1:, :]
+            
+            # Get log_probs to avoid numerical underflow/overflow
+            logit_scores = logit_scores / self.temperature
+            log_prob_scores = torch.log_softmax(logit_scores, dim=-1)
+            # We only need to keep the logit scores corresponding to the completion tokens
+            log_prob_scores = torch.gather(log_prob_scores, dim=-1, index=completion_ids.unsqueeze(-1)).squeeze(-1)
+            return log_prob_scores.view(-1, self.num_responses_per_example, log_prob_scores.shape[-1])
+        
+        else:
+            batch_size = prompt_ids.shape[0]//self.num_responses_per_example
+            log_prob_scores = logit_scores[:, prompt_length-1:]
+            return log_prob_scores.view(batch_size, self.num_responses_per_example, -1)
     
     def _disable_dropout(self):
         """
@@ -207,7 +217,7 @@ class SimpleGRPOModule(pl.LightningModule):
         reference_logprob_scores: torch.Tensor, 
         advantage_scores: torch.Tensor,
         completions_mask: torch.Tensor,
-        ):
+        ) -> torch.Tensor:
         """
         Compute the GRPO loss.
 
@@ -236,15 +246,28 @@ class SimpleGRPOModule(pl.LightningModule):
         policy_ratio = torch.exp(policy_logprob_scores - old_policy_logprob_scores)
         policy_ratio = policy_ratio * completions_mask
         clipped_policy_loss = torch.clamp(policy_ratio, 1 - self.epsilon, 1 + self.epsilon)
-        policy_loss = torch.minimum(policy_ratio * advantage_scores.unsqueeze(-1), clipped_policy_loss * advantage_scores.unsqueeze(-1))
-        policy_loss = policy_loss.sum(dim=-1)
-        logger.info(f"Policy loss: {(policy_loss/completions_length).mean()}")
+        policy_score = torch.minimum(policy_ratio * advantage_scores.unsqueeze(-1), clipped_policy_loss * advantage_scores.unsqueeze(-1))
+        policy_score = policy_score.sum(dim=-1)
+        logger.info(f"Policy score: {(policy_score/completions_length).mean()}")
         logger.info(f"KL div loss: {(kl_div_loss/completions_length).mean()}")
-        grpo_loss = policy_loss - kl_div_loss
+        # In the GRPO paper the total reward is policy_score - kl_div_loss which is maximized
+        # To convert it to a loss that's minimized we need to negate it
+        grpo_loss = -1.0 * (policy_score - kl_div_loss)
         grpo_loss /= completions_length
         return grpo_loss.mean()
     
-    def compute_rewards(self, sampled_responses: List, answers:List[str]):
+    def compute_rewards(self, sampled_responses: List, answers:List[str], completions_mask: torch.LongTensor):
+        """
+        Compute the rewards for the sampled responses.
+
+        Args:
+            sampled_responses (List): The sampled responses.
+            answers (List[str]): The answers.
+            completions_mask (torch.LongTensor): The completions mask.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: The rewards for the sampled responses.
+        """
         # Repeat the answers for each response num_responses_per_example times
         answers = [answer for answer in answers for _ in range(self.num_responses_per_example)]
         sampled_responses = [
@@ -259,10 +282,14 @@ class SimpleGRPOModule(pl.LightningModule):
             reference_format_regex=r"(<think>)[\s\S]*?(</think>)[\s\S]*?(<answer>)[\s\D]*(\d+)[\s\D]*(</answer>)",
             # reference_format_regex=r"(?is).*(answer).*(\d+)"
         )
+        length_rewards = length_reward(completions_mask)
         correct_answer_rewards = torch.tensor(correct_answer_rewards).view(-1, self.num_responses_per_example)
         format_rewards = torch.tensor(format_rewards).view(-1, self.num_responses_per_example)
+        length_rewards = torch.tensor(length_rewards).view(-1, self.num_responses_per_example)
 
-        return correct_answer_rewards.to(self.device), format_rewards.to(self.device)
+        return correct_answer_rewards.to(self.device),\
+                format_rewards.to(self.device),\
+                length_rewards.to(self.device)
     
     def compute_advantage_score(self, rewards: torch.Tensor):
         """
@@ -367,15 +394,18 @@ class SimpleGRPOModule(pl.LightningModule):
         completions_mask = self._get_completions_mask(completion_ids)
 
         logger.info(f"Sample question: {batch['question'][0]}")
-        logger.info(f"Sample answer: {batch['answer'][0]}")
+        logger.info(f"Sample answer: {batch['answer'][0]}") 
         logger.info(f"Sampled responses: {completions[0][0]}")
-        correct_answer_rewards, format_rewards = self.compute_rewards(completions, batch["answer"])
+        correct_answer_rewards, format_rewards, length_rewards = self.compute_rewards(
+            completions, batch["answer"], completions_mask
+        )
 
         # Log total rewards per step
-        total_rewards = (correct_answer_rewards + format_rewards).sum().item()
-        advantage_scores = self.compute_advantage_score(correct_answer_rewards + format_rewards)
+        average_rewards = (correct_answer_rewards + format_rewards + length_rewards).mean().item()
+        advantage_scores = self.compute_advantage_score(correct_answer_rewards + format_rewards + length_rewards)
         logger.info(f"Correct answer rewards: {correct_answer_rewards.mean(dim=1)}")
         logger.info(f"Format rewards: {format_rewards.mean(dim=1)}")
+        logger.info(f"Length rewards: {length_rewards.mean(dim=1)}")
         
         # Repeat the prompts for each response
         prompt_ids = inputs["input_ids"].repeat_interleave(self.num_responses_per_example, dim=0)
@@ -409,15 +439,13 @@ class SimpleGRPOModule(pl.LightningModule):
             completions_mask.view(-1, self.num_responses_per_example, completion_ids.shape[-1]),
         )
         logger.info(f"Loss is {loss}")
-        # Debug: check if loss requires grad and what params are trainable
-        # print('DEBUG: loss.requires_grad:', loss.requires_grad)
-        # trainable_count = 0
-        # for name, param in self.policy_model.named_parameters():
-        #     if param.requires_grad:
-        #         print(f'DEBUG: Trainable param: {name}, shape: {param.shape}')
-        #         trainable_count += 1
-        # print(f'DEBUG: Total trainable parameters: {trainable_count}')
-        self.log_dict({"train_loss": loss, "train_total_rewards": total_rewards})
+        self.log_dict(
+            {
+                "train_loss": loss, 
+                "train_average_rewards": average_rewards
+            }, 
+            on_step=True, on_epoch=False, prog_bar=True
+        )
         return loss
 
     def on_train_batch_end(self, outputs, batch, batch_idx):
@@ -447,18 +475,20 @@ class SimpleGRPOModule(pl.LightningModule):
         self.val_num_correct_per_group.clear()
         return num_correct_per_group.float().mean().item()        
 
+
 if __name__ == "__main__":
     grpo_module = SimpleGRPOModule(
         model_name_or_path="HuggingFaceTB/SmolLM2-135M-Instruct",
-        num_responses_per_example=4,
+        num_responses_per_example=8,
         top_k=50,
         top_p=0.9,
         temperature=0.7,
-        max_gen_tokens=64,
-        max_steps=8,
+        max_gen_tokens=300,
+        max_steps=100,
         num_steps_to_refresh_old_policy=16,
         is_peft=False,
         bottom_k_layers_to_train=4,
+        learning_rate=2e-5
     )
     train_dataset, test_dataset = get_gsm8k_dataset()
     train_dataset = train_dataset.map(tokenize_example, fn_kwargs={"tokenizer": grpo_module.tokenizer})

@@ -1,5 +1,6 @@
 from typing import List
 import re
+import torch
 
 def correct_answer_reward(answers: List[str], reference_answer: List[str]):
     """
@@ -47,4 +48,42 @@ def format_reward(answers: List[str], reference_format_regex: str, per_group_rew
             len([match.group(i) for i in range(1, len(match.groups()) + 1) if match.group(i)]) * per_group_reward if match else 0.0 
             for match in matches
         ]
-    
+
+def length_reward(completions_mask: torch.LongTensor, max_length: int = 250):
+    return [
+        0.5 if 20 <= completion_mask.sum().item() <= max_length else 0.0 
+        for completion_mask in completions_mask
+    ]
+
+
+def trl_format_reward(completions: List[str], **kwargs):
+    """
+    Calculate the format reward for the given completions.
+
+    Args:
+        completions (List[str]): The completions to calculate the reward for.
+        **kwargs: Additional keyword arguments.
+
+    Returns:
+        List[float]: The format reward.
+    """
+    reference_regex = r"(<think>)[\s\S]*?(</think>)[\s\S]*?(<answer>)[\s\D]*(\d+)[\s\D]*(</answer>)"
+    completion_text = [completion for completion in completions]
+    rewards = format_reward(completion_text, reference_regex)
+    return rewards
+
+def trl_correct_answer_reward(completions: List[str], **kwargs):
+    """
+    Calculate the correct answer reward for the given completions.
+
+    Args:
+        completions (List[str]): The completions to calculate the reward for.
+        **kwargs: Additional keyword arguments.
+
+    Returns:
+        List[float]: The correct answer reward.
+    """ 
+    answers = kwargs["answer"]
+    completion_text = [completion for completion in completions]
+    rewards = correct_answer_reward(completion_text, answers)
+    return rewards
