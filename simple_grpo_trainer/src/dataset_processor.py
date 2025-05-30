@@ -13,7 +13,7 @@ def extract_answer(example: dict[str, str]):
         dict[str, str]: The example with the answer extracted.
     """
     answer_loc = example["answer"].find("### ")
-    example["answer"] = example["answer"][answer_loc + 4:]
+    example["answer"] = example["answer"][answer_loc + 4:].replace(",", "")
     return example
 
 
