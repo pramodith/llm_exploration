@@ -13,6 +13,8 @@ def extract_answer(example: dict[str, str]):
         dict[str, str]: The example with the answer extracted.
     """
     answer_loc = example["answer"].find("### ")
+    if answer_loc == -1:
+        raise ValueError("Answer marker not found in example")
     example["answer"] = example["answer"][answer_loc + 4:].replace(",", "")
     return example
 
