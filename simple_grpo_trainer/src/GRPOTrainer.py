@@ -16,6 +16,14 @@ import copy
 from dataset_processor import get_gsm8k_dataset, create_dataloader, tokenize_example
 from schemas import ModelType
 
+# Use local vllm LLM engine for reference model
+reference_model = LLM(
+    model="HuggingFaceTB/SmolLM2-135M-Instruct", 
+    gpu_memory_utilization=0.15, 
+    max_seq_len_to_capture=800,
+    enable_prefix_caching=True
+)
+
 logger.add("grpo_trainer.log", rotation="10 MB")
 pl.seed_everything(42, workers=True)
 class SimpleGRPOModule(pl.LightningModule):
@@ -79,13 +87,7 @@ class SimpleGRPOModule(pl.LightningModule):
                 param.requires_grad = False
         
         self.policy_model = self.policy_model.to(self.device)
-
-        # Use local vllm LLM engine for reference model
-        self.reference_model = LLM(
-            model=model_name_or_path, 
-            gpu_memory_utilization=0.15, 
-            max_seq_len_to_capture=800
-        )
+        self.policy_model = torch.compile(self.policy_model)
 
         self.num_responses_per_example = num_responses_per_example
         self.top_k = top_k
@@ -124,6 +126,7 @@ class SimpleGRPOModule(pl.LightningModule):
             is_policy_model (bool): Whether to use the policy model.
         """
         prompt_completion_input = torch.cat([prompt_ids, completion_ids], dim=-1)
+        print(prompt_completion_input.shape)
         prompt_length = prompt_ids.shape[-1]
         prompt_completion_mask = torch.cat([prompt_mask, completions_mask], dim=-1)
         if model_type == ModelType.Active:
@@ -136,25 +139,27 @@ class SimpleGRPOModule(pl.LightningModule):
             # Use local vllm engine for reference model inference
             sampling_params = SamplingParams(
                 max_tokens=1,
-                prompt_logprobs=1, # set to 1 for prompt token logprobs
-                enable_prefix_caching=True
+                prompt_logprobs=0, # set to 1 for prompt token logprobs
             )
-            outputs = self.reference_model.generate(
-                prompt_token_ids=prompt_completion_input,
+            outputs = reference_model.generate(
+                prompt_token_ids=prompt_completion_input.tolist(),
                 sampling_params=sampling_params,
-                use_tqdm=False
+                use_tqdm=True
             )
             # Extract logprobs for prompt tokens if needed
             # Here, we keep the logits for compatibility with the rest of the method
-            logit_scores = torch.stack([
-                torch.tensor(out.outputs[0].logits) for out in outputs
-            ])
+            logit_scores = []
+            for output in outputs:
+                logit_scores.append([])
+                for logprob_dict in output.prompt_logprobs[1:]:
+                    for key, val in logprob_dict.items():
+                        logit_scores[-1].append(val.logprob)
+            logit_scores = torch.tensor(logit_scores, dtype=torch.float16).to(self.device)
+            print(logit_scores.shape)
+            assert False
+                    
             # If you want to use logprobs for prompt tokens, access out.prompt_logprobs
         
-        # Logit scores are of shape (batch_size * num_responses_per_example, seq_len + 1, vocab_size)
-        # We exclude the logit scores for the prompt and the last token 
-        # because it corresponds to the next token prediction
-        logit_scores = logit_scores[:, prompt_length-1:-1, :]
         # Get log_probs to avoid numerical underflow/overflow
         logit_scores = logit_scores / self.temperature
         log_prob_scores = torch.log_softmax(logit_scores, dim=-1)
@@ -279,6 +284,7 @@ class SimpleGRPOModule(pl.LightningModule):
         if self._step % self.num_steps_to_refresh_old_policy == 0:
             logger.info("Refreshing old policy model")
             self.old_policy_model = copy.deepcopy(self.policy_model)
+            self.old_policy_model = torch.compile(self.old_policy_model)
             self.old_policy_model.eval()
         return super().on_train_batch_start(batch, batch_idx)
     
