@@ -12,6 +12,7 @@ from typing import Dict, List
 from peft import get_peft_model, LoraConfig
 import time
 import copy
+import torch.profiler
 
 from dataset_processor import get_gsm8k_dataset, create_dataloader, tokenize_example
 from schemas import ModelType
@@ -388,29 +389,30 @@ class SimpleGRPOModule(pl.LightningModule):
         # Since we pad the prompts, 
         # all the completions will start from the size of the padded input/prompt
         prompt_end_index = inputs["input_ids"].size(1)
+
         
         self.policy_model.eval()
         # Get the completions from the policy model
-        t1 = time.time()
+        # t1 = time.time()
         completions, completion_ids = self.get_responses_from_policy_model(inputs, prompt_end_index)
-        timings['get_responses_from_policy_model'] = time.time() - t1
-        
+        # timings['get_responses_from_policy_model'] = time.time() - t1
+    
         completions_mask = self._get_completions_mask(completion_ids)
 
         logger.info(f"Sample question: {batch['question'][0]}")
         logger.info(f"Sample answer: {batch['answer'][0]}") 
         logger.info(f"Sampled responses: {completions[0][0]}")
-        t2 = time.time()
+        # t2 = time.time()
         correct_answer_rewards, format_rewards, length_rewards = self.compute_rewards(
             completions, batch["answer"], completions_mask
         )
-        timings['compute_rewards'] = time.time() - t2
+        # timings['compute_rewards'] = time.time() - t2
 
         # Log total rewards per step
         average_rewards = (correct_answer_rewards + format_rewards + length_rewards).mean().item()
-        t3 = time.time()
+        # t3 = time.time()
         advantage_scores = self.compute_advantage_score(correct_answer_rewards + format_rewards + length_rewards)
-        timings['compute_advantage_score'] = time.time() - t3
+        # timings['compute_advantage_score'] = time.time() - t3
         logger.info(f"Correct answer rewards: {correct_answer_rewards.mean(dim=1)}")
         logger.info(f"Format rewards: {format_rewards.mean(dim=1)}")
         logger.info(f"Length rewards: {length_rewards.mean(dim=1)}")
@@ -420,33 +422,33 @@ class SimpleGRPOModule(pl.LightningModule):
         prompt_mask = inputs["attention_mask"].repeat_interleave(self.num_responses_per_example, dim=0)
 
         # Compute the forward pass with gradient calculation enabled.
-        t4 = time.time()
+        # t4 = time.time()
         policy_prob_scores = self._get_completion_log_prob_scores(
             prompt_ids, prompt_mask, completion_ids, completions_mask, model_type=ModelType.Active
         )
-        timings['policy_logprob'] = time.time() - t4
+        # timings['policy_logprob'] = time.time() - t4
         if self._step % self.num_steps_to_refresh_old_policy != 0:
             # If we are refreshing the old policy, we need to compute the log probabilities
             # for the old policy model as well.
-            t5 = time.time()
+            # t5 = time.time()
             old_policy_prob_scores = self._get_completion_log_prob_scores(
                 prompt_ids, prompt_mask, completion_ids, completions_mask, model_type=ModelType.Old
             )
-            timings['old_policy_logprob'] = time.time() - t5
+            # timings['old_policy_logprob'] = time.time() - t5
         else:
             # The old policy model is the same as the current policy model so the outputs would
             # be the same.
             old_policy_prob_scores = policy_prob_scores
-            timings['old_policy_logprob'] = 0.0
+            # timings['old_policy_logprob'] = 0.0
 
         # Compute the forward pass with gradient calculation disabled.
-        t6 = time.time()
+        # t6 = time.time()
         reference_prob_scores = self._get_completion_log_prob_scores(
             prompt_ids, prompt_mask, completion_ids, completions_mask, model_type=ModelType.Reference
         )
-        timings['reference_logprob'] = time.time() - t6
+        # timings['reference_logprob'] = time.time() - t6
 
-        t7 = time.time()
+        # t7 = time.time()
         loss = self.compute_grpo_loss(
             policy_prob_scores,
             old_policy_prob_scores,
@@ -454,11 +456,11 @@ class SimpleGRPOModule(pl.LightningModule):
             advantage_scores,
             completions_mask.view(-1, self.num_responses_per_example, completion_ids.shape[-1]),
         )
-        timings['compute_grpo_loss'] = time.time() - t7
+        # timings['compute_grpo_loss'] = time.time() - t7
 
         logger.info(f"Loss is {loss}")
-        for k, v in timings.items():
-            logger.info(f"TIMING: {k}: {v:.4f} seconds")
+        # for k, v in timings.items():
+        #     logger.info(f"TIMING: {k}: {v:.4f} seconds")
         self.log_dict(
             {
                 "train_loss": loss, 
@@ -526,13 +528,14 @@ if __name__ == "__main__":
     )
 
     grpo_trainer = Trainer(
-        max_steps=100,
+        max_steps=10,
         accelerator="auto",
         precision="16-mixed",
         callbacks=[lr_monitor, checkpointer],
         enable_progress_bar=True,
         enable_model_summary=True,
         log_every_n_steps=1,
+        profiler="pytorch"
     )
 
     # Pre-training evaluation on the test set
