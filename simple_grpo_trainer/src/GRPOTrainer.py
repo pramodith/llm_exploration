@@ -10,11 +10,13 @@ from rewards import correct_answer_reward, format_reward, length_reward
 from loguru import logger
 from typing import Dict, List
 from peft import get_peft_model, LoraConfig
-
+import time
 import copy
 
 from dataset_processor import get_gsm8k_dataset, create_dataloader, tokenize_example
 from schemas import ModelType
+
+torch.set_float32_matmul_precision('medium')
 
 # Use local vllm LLM engine for reference model
 reference_model = LLM(
@@ -88,7 +90,6 @@ class SimpleGRPOModule(pl.LightningModule):
                 param.requires_grad = False
         
         self.policy_model = self.policy_model.to(self.device)
-        self.policy_model = torch.compile(self.policy_model)
 
         self.num_responses_per_example = num_responses_per_example
         self.top_k = top_k
@@ -311,7 +312,6 @@ class SimpleGRPOModule(pl.LightningModule):
         if self._step % self.num_steps_to_refresh_old_policy == 0:
             logger.info("Refreshing old policy model")
             self.old_policy_model = copy.deepcopy(self.policy_model)
-            self.old_policy_model = torch.compile(self.old_policy_model)
             self.old_policy_model.eval()
         return super().on_train_batch_start(batch, batch_idx)
     
@@ -359,21 +359,22 @@ class SimpleGRPOModule(pl.LightningModule):
         inputs: Dict[str, torch.Tensor], 
         prompt_end_index: int
     ):
-        responses = self.policy_model.generate(
-            **inputs,
-            do_sample=True,
-            temperature = self.temperature,
-            top_p = self.top_p,
-            top_k=self.top_k,
-            max_new_tokens=self.max_gen_tokens,
-            num_return_sequences=self.num_responses_per_example,
-        )
+        with torch.no_grad():
+            responses = self.policy_model.generate(
+                **inputs,
+                do_sample=True,
+                temperature = self.temperature,
+                top_p = self.top_p,
+                top_k=self.top_k,
+                max_new_tokens=self.max_gen_tokens,
+                num_return_sequences=self.num_responses_per_example,
+            )
 
-        # Get rid of the prompt tokens in the response
-        completion_ids = responses[:, prompt_end_index:]
-        # Get the rewards for each response
-        completions = [self.tokenizer.batch_decode(completion_ids[i*self.num_responses_per_example:(i+1)*self.num_responses_per_example], skip_special_tokens=True) 
-            for i in range(len(inputs["input_ids"]))]
+            # Get rid of the prompt tokens in the response
+            completion_ids = responses[:, prompt_end_index:]
+            # Get the rewards for each response
+            completions = [self.tokenizer.batch_decode(completion_ids[i*self.num_responses_per_example:(i+1)*self.num_responses_per_example], skip_special_tokens=True) 
+                for i in range(len(inputs["input_ids"]))]
         
         return completions, completion_ids
 
@@ -382,6 +383,7 @@ class SimpleGRPOModule(pl.LightningModule):
         # The batch is a dictionary with keys "prompt" and "answer"
         # and values are lists of strings.
         inputs = self.prepare_inputs(batch)
+        timings = {}
         prompt_mask = inputs["attention_mask"]
         # Since we pad the prompts, 
         # all the completions will start from the size of the padded input/prompt
@@ -389,24 +391,26 @@ class SimpleGRPOModule(pl.LightningModule):
         
         self.policy_model.eval()
         # Get the completions from the policy model
+        t1 = time.time()
         completions, completion_ids = self.get_responses_from_policy_model(inputs, prompt_end_index)
+        timings['get_responses_from_policy_model'] = time.time() - t1
         
         completions_mask = self._get_completions_mask(completion_ids)
 
         logger.info(f"Sample question: {batch['question'][0]}")
         logger.info(f"Sample answer: {batch['answer'][0]}") 
         logger.info(f"Sampled responses: {completions[0][0]}")
-        t3 = time.time()
+        t2 = time.time()
         correct_answer_rewards, format_rewards, length_rewards = self.compute_rewards(
             completions, batch["answer"], completions_mask
         )
-        timings['compute_rewards'] = time.time() - t3
+        timings['compute_rewards'] = time.time() - t2
 
         # Log total rewards per step
         average_rewards = (correct_answer_rewards + format_rewards + length_rewards).mean().item()
-        t4 = time.time()
+        t3 = time.time()
         advantage_scores = self.compute_advantage_score(correct_answer_rewards + format_rewards + length_rewards)
-        timings['compute_advantage_score'] = time.time() - t4
+        timings['compute_advantage_score'] = time.time() - t3
         logger.info(f"Correct answer rewards: {correct_answer_rewards.mean(dim=1)}")
         logger.info(f"Format rewards: {format_rewards.mean(dim=1)}")
         logger.info(f"Length rewards: {length_rewards.mean(dim=1)}")
@@ -416,19 +420,19 @@ class SimpleGRPOModule(pl.LightningModule):
         prompt_mask = inputs["attention_mask"].repeat_interleave(self.num_responses_per_example, dim=0)
 
         # Compute the forward pass with gradient calculation enabled.
-        t5 = time.time()
+        t4 = time.time()
         policy_prob_scores = self._get_completion_log_prob_scores(
             prompt_ids, prompt_mask, completion_ids, completions_mask, model_type=ModelType.Active
         )
-        timings['policy_logprob'] = time.time() - t5
+        timings['policy_logprob'] = time.time() - t4
         if self._step % self.num_steps_to_refresh_old_policy != 0:
             # If we are refreshing the old policy, we need to compute the log probabilities
             # for the old policy model as well.
-            t6 = time.time()
+            t5 = time.time()
             old_policy_prob_scores = self._get_completion_log_prob_scores(
                 prompt_ids, prompt_mask, completion_ids, completions_mask, model_type=ModelType.Old
             )
-            timings['old_policy_logprob'] = time.time() - t6
+            timings['old_policy_logprob'] = time.time() - t5
         else:
             # The old policy model is the same as the current policy model so the outputs would
             # be the same.
@@ -436,13 +440,13 @@ class SimpleGRPOModule(pl.LightningModule):
             timings['old_policy_logprob'] = 0.0
 
         # Compute the forward pass with gradient calculation disabled.
-        t7 = time.time()
+        t6 = time.time()
         reference_prob_scores = self._get_completion_log_prob_scores(
             prompt_ids, prompt_mask, completion_ids, completions_mask, model_type=ModelType.Reference
         )
-        timings['reference_logprob'] = time.time() - t7
+        timings['reference_logprob'] = time.time() - t6
 
-        t8 = time.time()
+        t7 = time.time()
         loss = self.compute_grpo_loss(
             policy_prob_scores,
             old_policy_prob_scores,
@@ -450,7 +454,7 @@ class SimpleGRPOModule(pl.LightningModule):
             advantage_scores,
             completions_mask.view(-1, self.num_responses_per_example, completion_ids.shape[-1]),
         )
-        timings['compute_grpo_loss'] = time.time() - t8
+        timings['compute_grpo_loss'] = time.time() - t7
 
         logger.info(f"Loss is {loss}")
         for k, v in timings.items():
@@ -524,7 +528,7 @@ if __name__ == "__main__":
     grpo_trainer = Trainer(
         max_steps=100,
         accelerator="auto",
-        precision="16",
+        precision="16-mixed",
         callbacks=[lr_monitor, checkpointer],
         enable_progress_bar=True,
         enable_model_summary=True,
