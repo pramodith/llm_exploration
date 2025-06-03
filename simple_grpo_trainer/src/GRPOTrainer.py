@@ -19,15 +19,6 @@ from schemas import ModelType
 
 torch.set_float32_matmul_precision('medium')
 
-# Use local vllm LLM engine for reference model
-reference_model = LLM(
-    model="HuggingFaceTB/SmolLM2-135M-Instruct", 
-    gpu_memory_utilization=0.15, 
-    max_seq_len_to_capture=800,
-    enable_prefix_caching=True,
-    dtype='float16',
-)
-
 logger.add("grpo_trainer.log", rotation="10 MB")
 pl.seed_everything(42, workers=True)
 class SimpleGRPOModule(pl.LightningModule):
@@ -91,6 +82,9 @@ class SimpleGRPOModule(pl.LightningModule):
                 param.requires_grad = False
         
         self.policy_model = self.policy_model.to(self.device)
+        self.reference_model = AutoModelForCausalLM.from_pretrained(model_name_or_path)
+        self.reference_model = self.reference_model.to(self.device)
+        self.reference_model.eval()
 
         self.num_responses_per_example = num_responses_per_example
         self.top_k = top_k
@@ -134,50 +128,26 @@ class SimpleGRPOModule(pl.LightningModule):
         if model_type == ModelType.Active:
             self.policy_model.train()
             logit_scores = self.policy_model(input_ids = prompt_completion_input, attention_mask = prompt_completion_mask).logits
-            logit_scores = logit_scores[:, :-1, :]
         elif model_type == ModelType.Old:
             with torch.no_grad():
                 logit_scores = self.old_policy_model(input_ids = prompt_completion_input, attention_mask = prompt_completion_mask).logits
-            logit_scores = logit_scores[:, :-1, :]
         elif model_type == ModelType.Reference:
-            # Use local vllm engine for reference model inference
-            sampling_params = SamplingParams(
-                max_tokens=1,
-                prompt_logprobs=0, # set to 1 for prompt token logprobs
-            )
-            outputs = reference_model.generate(
-                prompt_token_ids=prompt_completion_input.tolist(),
-                sampling_params=sampling_params,
-                use_tqdm=True
-            )
-            # Extract logprobs for prompt tokens if needed
-            # Here, we keep the logits for compatibility with the rest of the method
-            logit_scores = []
-            for output in outputs:
-                logit_scores.append([])
-                for logprob_dict in output.prompt_logprobs[1:]:
-                    for key, val in logprob_dict.items():
-                        logit_scores[-1].append(val.logprob)
-            logit_scores = torch.tensor(logit_scores, dtype=torch.float16).to(self.device)
-        
-        if model_type != ModelType.Reference:
-            # If you want to use logprobs for prompt tokens, access out.prompt_logprobs
-            # Logit scores are of shape (batch_size * num_responses_per_example, seq_len + 1, vocab_size)
-            # We exclude the logit scores for the prompt and the last token 
-            # because it corresponds to the next token prediction
-            logit_scores = logit_scores[:, prompt_length-1:, :]
+            with torch.no_grad():
+                logit_scores = self.reference_model(input_ids = prompt_completion_input, attention_mask = prompt_completion_mask).logits
             
-            # Get log_probs to avoid numerical underflow/overflow
-            logit_scores = logit_scores / self.temperature
-            log_prob_scores = torch.log_softmax(logit_scores, dim=-1)
-            # We only need to keep the logit scores corresponding to the completion tokens
-            log_prob_scores = torch.gather(log_prob_scores, dim=-1, index=completion_ids.unsqueeze(-1)).squeeze(-1)
-            return log_prob_scores.view(-1, self.num_responses_per_example, log_prob_scores.shape[-1])
+        # If you want to use logprobs for prompt tokens, access out.prompt_logprobs
+        # Logit scores are of shape (batch_size * num_responses_per_example, seq_len + 1, vocab_size)
+        # We exclude the logit scores for the prompt and the last token 
+        # because it corresponds to the next token prediction
+        logit_scores = logit_scores[:, prompt_length-1:-1, :]
         
-        else:
-            batch_size = prompt_ids.shape[0]//self.num_responses_per_example
-            log_prob_scores = logit_scores[:, prompt_length-1:]
-            return log_prob_scores.view(batch_size, self.num_responses_per_example, -1)
+        # Get log_probs to avoid numerical underflow/overflow
+        logit_scores = logit_scores / self.temperature
+        log_prob_scores = torch.log_softmax(logit_scores, dim=-1)
+        # We only need to keep the logit scores corresponding to the completion tokens
+        log_prob_scores = torch.gather(log_prob_scores, dim=-1, index=completion_ids.unsqueeze(-1)).squeeze(-1)
+        return log_prob_scores.view(-1, self.num_responses_per_example, log_prob_scores.shape[-1])
+        
     
     def _disable_dropout(self):
         """
@@ -535,7 +505,7 @@ if __name__ == "__main__":
         enable_progress_bar=True,
         enable_model_summary=True,
         log_every_n_steps=1,
-        profiler="pytorch"
+        # profiler="pytorch"
     )
 
     # Pre-training evaluation on the test set
