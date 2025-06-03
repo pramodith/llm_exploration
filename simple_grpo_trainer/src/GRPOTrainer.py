@@ -238,7 +238,7 @@ class SimpleGRPOModule(pl.LightningModule):
             completions_mask (torch.LongTensor): The completions mask.
 
         Returns:
-            Tuple[torch.Tensor, torch.Tensor]: The rewards for the sampled responses.
+            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: The rewards for the sampled responses.
         """
         # Repeat the answers for each response num_responses_per_example times
         answers = [answer for answer in answers for _ in range(self.num_responses_per_example)]

@@ -1,8 +1,50 @@
 import unittest
-from simple_grpo_trainer.src.rewards import correct_answer_reward, format_reward
+from simple_grpo_trainer.src.rewards import correct_answer_reward, format_reward, trl_format_reward, trl_correct_answer_reward
 import numpy as np
 
 class TestRewards(unittest.TestCase):
+    def test_trl_format_reward_full_match(self):
+        """Test trl_format_reward when there's a full match."""
+        completions = ["<think>reasoning</think> <answer>42</answer>"]
+        # Matches the reference_regex in trl_format_reward
+        rewards = trl_format_reward(completions)
+        # The regex has 5 groups, so reward should be 0.5
+        self.assertEqual(rewards, [0.5])
+
+    def test_trl_format_reward_no_match(self):
+        """Test trl_format_reward when there's no match."""
+        completions = ["No tags here"]
+        rewards = trl_format_reward(completions)
+        self.assertEqual(rewards, [0.0])
+
+    def test_trl_format_reward_multiple(self):
+        """Test trl_format_reward with multiple completions."""
+        completions = [
+            "<think>reasoning</think> <answer>42</answer>",
+            "<think>foo\n</think>\n<answer>24</answer>",
+            "No tags here"
+        ]
+        rewards = trl_format_reward(completions)
+        self.assertEqual(rewards, [0.5, 0.5, 0.0])
+
+    def test_trl_correct_answer_reward_exact_match(self):
+        """Test trl_correct_answer_reward with exact match."""
+        completions = ["<think>reasoning</think> <answer>42</answer>"]
+        rewards = trl_correct_answer_reward(completions, answer=["42"])
+        self.assertEqual(rewards, [1.0])
+
+    def test_trl_correct_answer_reward_wrong_number(self):
+        """Test trl_correct_answer_reward with wrong number."""
+        completions = ["<think>reasoning</think> <answer>24</answer>"]
+        rewards = trl_correct_answer_reward(completions, answer=["42"])
+        self.assertEqual(rewards, [0.25])
+
+    def test_trl_correct_answer_reward_no_number(self):
+        """Test trl_correct_answer_reward with no number in completion."""
+        completions = ["No answer here"]
+        rewards = trl_correct_answer_reward(completions, answer=["42"])
+        self.assertEqual(rewards, [0.0])
+
     def test_correct_answer_reward_exact_match(self):
         """Test correct_answer_reward when there's an exact match."""
         answers = ["The answer is 42"]

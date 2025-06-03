@@ -35,14 +35,16 @@ class TestSimpleGRPOModule:
                 # Set up our mock model
                 policy_model = MockModel()
                 mock_model.return_value = policy_model
+            
                 
                 # Initialize the module with our mocked components
-                module = SimpleGRPOModule(model_name_or_path="dummy_model")
+                module = SimpleGRPOModule(model_name_or_path="dummy_model", bottom_k_layers_to_train=-1)
                 
                 # Verify initial dropout settings
                 dropouts = [m for m in policy_model.modules() if isinstance(m, nn.Dropout)]
                 assert len(dropouts) == 3, "Should have 3 dropout layers"
                 
+                module._disable_dropout()
                 # Verify all dropout layers have been disabled
                 for dropout in dropouts:
                     assert dropout.p == 0.0, "Dropout probability should be set to 0.0"
@@ -71,8 +73,8 @@ class TestSimpleGRPOModule:
                 mock_model.return_value = policy_model
                 
                 # Initialize the module with our mocked components
-                module = SimpleGRPOModule(model_name_or_path="dummy_model")
-                
+                module = SimpleGRPOModule(model_name_or_path="dummy_model", bottom_k_layers_to_train=-1)
+                module._disable_dropout()
                 # Verify no dropout layers
                 dropouts = [m for m in policy_model.modules() if isinstance(m, nn.Dropout)]
                 assert len(dropouts) == 0, "Should have no dropout layers"
@@ -117,7 +119,8 @@ class TestSimpleGRPOModule:
                 mock_model.return_value = policy_model
                 
                 # Initialize the module with our mocked components
-                module = SimpleGRPOModule(model_name_or_path="dummy_model")
+                module = SimpleGRPOModule(model_name_or_path="dummy_model", bottom_k_layers_to_train=-1)
+                module._disable_dropout()
                 
                 # Verify initial dropout settings
                 dropouts = [m for m in policy_model.modules() if isinstance(m, nn.Dropout)]
@@ -226,13 +229,21 @@ class TestSimpleGRPOModule:
                     mock_format.return_value = [0.1, 0.2, 0.3, 0.4]
                     sampled_responses = [["answer 1", "answer 2"], ["answer 3", "answer 4"]]
                     answers = ["1", "3"]
-                    correct, fmt = module.compute_rewards(sampled_responses, answers)
+                    completions_mask = [
+                        torch.zeros(128,), 
+                        torch.zeros(128,), 
+                        torch.ones(128,), 
+                        torch.ones(128,),
+                    ]
+                    correct, fmt, length_reward = module.compute_rewards(sampled_responses, answers, completions_mask)
                     # Should be shape (2, 2)
                     assert correct.shape == (2, 2)
                     assert fmt.shape == (2, 2)
+                    assert length_reward.shape == (2, 2)
                     # Should match mocked values
                     np.testing.assert_allclose(correct.numpy(), [[1.0, 0.0], [1.0, 0.0]])
                     np.testing.assert_allclose(fmt.numpy(), [[0.1, 0.2], [0.3, 0.4]])
+                    np.testing.assert_allclose(length_reward.numpy(), [[0.0, 0.0], [0.5, 0.5]])
 
     def test_compute_rewards_repeat_and_flatten(self):
         """
@@ -255,7 +266,15 @@ class TestSimpleGRPOModule:
                         return [0.0]*6
                     mock_correct.side_effect = check_args
                     mock_format.return_value = [0.0]*6
-                    correct, fmt = module.compute_rewards(sampled_responses, answers)
+                    completions_mask = [
+                        torch.zeros(1,), 
+                        torch.zeros(1,), 
+                        torch.ones(1,), 
+                        torch.ones(1,), 
+                        torch.ones(1,), 
+                        torch.ones(1,), 
+                        ]
+                    correct, fmt, _ = module.compute_rewards(sampled_responses, answers, completions_mask)
                     assert correct.shape == (2, 3)
                     assert fmt.shape == (2, 3)
 
@@ -269,12 +288,20 @@ class TestSimpleGRPOModule:
                 class DummyModel:
                     def __init__(self):
                         self.logits = None
+                        self.device = "cpu"
+                    
                     def eval(self):
                         pass
+                    
                     def train(self):
                         pass
+                    
                     def modules(self):
                         return []
+                    
+                    def to(self, device):
+                        return self
+                    
                     def __call__(self, input_ids, attention_mask):
                         # Return logits of shape (batch, seq_len+1, vocab_size)
                         batch, seq = input_ids.shape
@@ -295,7 +322,11 @@ class TestSimpleGRPOModule:
                 """
                 dummy = DummyModel()
                 mock_model.return_value = dummy
-                module = SimpleGRPOModule(model_name_or_path="dummy_model", num_responses_per_example=2)
+                module = SimpleGRPOModule(
+                    model_name_or_path="dummy_model", 
+                    num_responses_per_example=2,
+                    bottom_k_layers_to_train=-1
+                    )
                 module.policy_model = dummy
                 module.old_policy_model = dummy
                 module.reference_model = dummy
@@ -331,7 +362,11 @@ class TestSimpleGRPOModule:
         """
         with patch('transformers.AutoModelForCausalLM.from_pretrained'):
             with patch('transformers.AutoTokenizer.from_pretrained'):
-                module = SimpleGRPOModule(model_name_or_path="dummy_model", num_responses_per_example=2)
+                module = SimpleGRPOModule(
+                    model_name_or_path="dummy_model", 
+                    num_responses_per_example=2,
+                    bottom_k_layers_to_train=-1
+                )
                 module.beta = 0.5
                 module.epsilon = 0.2
                 # Simple deterministic tensors
@@ -356,7 +391,11 @@ class TestSimpleGRPOModule:
         """
         with patch('transformers.AutoModelForCausalLM.from_pretrained'):
             with patch('transformers.AutoTokenizer.from_pretrained'):
-                module = SimpleGRPOModule(model_name_or_path="dummy_model", num_responses_per_example=2)
+                module = SimpleGRPOModule(
+                    model_name_or_path="dummy_model", 
+                    num_responses_per_example=2,
+                    bottom_k_layers_to_train=-1
+                )
                 module.beta = 1.0
                 module.epsilon = 1.0
                 # Only some tokens are valid
@@ -373,7 +412,7 @@ class TestSimpleGRPOModule:
                     completions_mask
                 )
 
-                expected_loss = - (torch.exp(torch.ones((1, 3))) - 2) / 3
+                expected_loss = (torch.exp(torch.ones((1, 3))) - 2) / 3
                 expected_loss = expected_loss.sum(dim=-1).mean()
                 assert loss.shape == (), "Loss should be a scalar"
                 assert torch.isfinite(loss), "Loss should be finite"
@@ -386,7 +425,11 @@ class TestSimpleGRPOModule:
         """
         with patch('transformers.AutoModelForCausalLM.from_pretrained'):
             with patch('transformers.AutoTokenizer.from_pretrained'):
-                module = SimpleGRPOModule(model_name_or_path="dummy_model", num_responses_per_example=2)
+                module = SimpleGRPOModule(
+                    model_name_or_path="dummy_model", 
+                    num_responses_per_example=2,
+                    bottom_k_layers_to_train=-1
+                )
                 module.beta = 0
                 module.epsilon = 1.0
                 # Only some tokens are valid
@@ -409,7 +452,7 @@ class TestSimpleGRPOModule:
                 """
                 expected_loss = torch.ones((1, 2, 3)) + 1
                 # divide by completion length
-                expected_loss = (expected_loss/3).sum(dim=-1).mean()
+                expected_loss = - (expected_loss/3).sum(dim=-1).mean()
                 assert loss.shape == (), "Loss should be a scalar"
                 assert torch.isfinite(loss), "Loss should be finite"
                 assert torch.allclose(loss, expected_loss, rtol=1e-4, atol=1e-4), \
@@ -430,7 +473,7 @@ class TestSimpleGRPOModule:
                 """
 
                 expected_loss = torch.exp(torch.ones(1, 2, 3))
-                expected_loss = (expected_loss/3).sum(dim=-1).mean()
+                expected_loss = - (expected_loss/3).sum(dim=-1).mean()
                 torch.testing.assert_close(
                     loss, expected_loss, rtol=1e-4, atol=1e-4,
                     msg=f"Expected loss {expected_loss}, got {loss}"

@@ -8,3 +8,5 @@ launch.json
 *.egg-info
 .vscode
 *logs
+trainer_output
+simple_grpo_trainer/trainer_output

@@ -1,0 +1,3 @@
+Model Name,Mean Accuracy Rewards,Mean Format Rewards
+HuggingFaceTB/SmolLM2-1.7B-Instruct,0.4042835533618927,0.24639879167079926
+google/gemma-3-1b-it,0.4675890803337097,0.0
