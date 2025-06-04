@@ -1,5 +1,4 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from vllm import LLM, SamplingParams
 from transformers.optimization import get_linear_schedule_with_warmup
 import lightning as pl
 from lightning.pytorch import Trainer
@@ -12,7 +11,8 @@ from typing import Dict, List
 from peft import get_peft_model, LoraConfig
 import time
 import copy
-import torch.profiler
+import torch
+
 
 from dataset_processor import get_gsm8k_dataset, create_dataloader, tokenize_example
 from schemas import ModelType
@@ -22,7 +22,17 @@ torch.set_float32_matmul_precision('medium')
 
 logger.add("grpo_trainer.log", rotation="10 MB")
 pl.seed_everything(42, workers=True)
+
 class SimpleGRPOModule(pl.LightningModule):
+    
+    def save_policy_parameters(self, filepath: str):
+        """
+        Save only the policy model's parameters to the specified filepath.
+        Args:
+            filepath (str): Path to save the policy model parameters (e.g., 'policy_model.pth').
+        """
+        torch.save(self.policy_model.state_dict(), filepath)
+
     def __init__(
         self, 
         model_name_or_path: str, 
@@ -100,7 +110,7 @@ class SimpleGRPOModule(pl.LightningModule):
         self._step = 0
         # Disable dropout after setting the model to train mode
         # self._disable_dropout()
-    
+
     def _get_completion_log_prob_scores(
         self, 
         prompt_ids: torch.LongTensor,
@@ -210,23 +220,30 @@ class SimpleGRPOModule(pl.LightningModule):
         """
         # GRPO uses a custom forumation of KL divergence loss that's always positive
         ref_policy_logprob_diff = reference_logprob_scores - policy_logprob_scores
-        kl_div_loss = torch.exp(ref_policy_logprob_diff) - ref_policy_logprob_diff - 1
-        kl_div_loss = kl_div_loss * completions_mask
-        kl_div_loss = self.beta * kl_div_loss.sum(dim=-1)
+        per_token_kl_div_loss = torch.exp(ref_policy_logprob_diff) - ref_policy_logprob_diff - 1
 
         completions_length = completions_mask.sum(dim=-1)
 
         policy_ratio = torch.exp(policy_logprob_scores - old_policy_logprob_scores)
         policy_ratio = policy_ratio * completions_mask
         clipped_policy_loss = torch.clamp(policy_ratio, 1 - self.epsilon, 1 + self.epsilon)
-        policy_score = torch.minimum(policy_ratio * advantage_scores.unsqueeze(-1), clipped_policy_loss * advantage_scores.unsqueeze(-1))
-        policy_score = policy_score.sum(dim=-1)
-        logger.info(f"Policy score: {(policy_score/completions_length).mean()}")
-        logger.info(f"KL div loss: {(kl_div_loss/completions_length).mean()}")
+        policy_score = torch.minimum(
+            policy_ratio * advantage_scores.unsqueeze(-1), 
+            clipped_policy_loss * advantage_scores.unsqueeze(-1)
+        )
+        
+        logger.info(f"Policy score: {((policy_score * completions_mask).sum(dim=-1)/completions_length).mean()}")
+        logger.info(f"KL div loss: {((per_token_kl_div_loss * completions_mask).sum(dim=-1)/completions_length).mean()}")
+        trl_kl_div_loss = (per_token_kl_div_loss * completions_mask).sum()/completions_mask.sum()
+        logger.info(f"TRL KL div loss: {trl_kl_div_loss.mean()}")
+        if trl_kl_div_loss.item() > 1.0:
+            logger.warning(f"KL div loss is too high: {trl_kl_div_loss}")
+            
         # In the GRPO paper the total reward is policy_score - kl_div_loss which is maximized
         # To convert it to a loss that's minimized we need to negate it
-        grpo_loss = -1.0 * (policy_score - kl_div_loss)
-        grpo_loss /= completions_length
+        grpo_loss = -1.0 * (policy_score - self.beta * per_token_kl_div_loss)
+        grpo_loss = grpo_loss * completions_mask
+        grpo_loss /= completions_length.unsqueeze(-1)
         return grpo_loss.mean()
     
     def compute_rewards(self, sampled_responses: List, answers:List[str], completions_mask: torch.LongTensor):
@@ -368,9 +385,9 @@ class SimpleGRPOModule(pl.LightningModule):
     
         completions_mask = self._get_completions_mask(completion_ids)
 
-        logger.info(f"Sample question: {batch['question'][0]}")
-        logger.info(f"Sample answer: {batch['answer'][0]}") 
-        logger.info(f"Sampled responses: {completions[0][0]}")
+        # logger.info(f"Sample question: {batch['question'][0]}")
+        # logger.info(f"Sample answer: {batch['answer'][0]}") 
+        # logger.info(f"Sampled responses: {completions[0][0]}")
         # t2 = time.time()
         correct_answer_rewards, format_rewards, length_rewards = self.compute_rewards(
             completions, batch["answer"], completions_mask
@@ -464,7 +481,8 @@ class SimpleGRPOModule(pl.LightningModule):
         logger.info(f"Average number of correct responses: {num_correct_per_group}")
         self.log("average_num_correct_responses", num_correct_per_group.float().mean().item())
         self.val_num_correct_per_group.clear()
-        return num_correct_per_group.float().mean().item()        
+        return num_correct_per_group.float().mean().item()      
+      
 
 
 if __name__ == "__main__":
@@ -475,10 +493,10 @@ if __name__ == "__main__":
         top_p=0.9,
         temperature=0.9,
         max_gen_tokens=300,
-        max_steps=500,
+        max_steps=100,
         num_steps_to_refresh_old_policy=64,
         is_peft=False,
-        bottom_k_layers_to_train=8,
+        bottom_k_layers_to_train=-1,
         learning_rate=5e-5
     )
     train_dataset, test_dataset = get_gsm8k_dataset()
@@ -489,7 +507,7 @@ if __name__ == "__main__":
     lr_monitor = LearningRateMonitor(logging_interval='step')
     checkpointer = ModelCheckpoint(
         monitor="train_loss",
-        dirpath="lightning_logs",
+        dirpath="./lightning_logs",
         filename="best-checkpoint",
         save_top_k=1,
         mode="min",
@@ -497,15 +515,15 @@ if __name__ == "__main__":
     )
 
     grpo_trainer = Trainer(
-        max_steps=500,
+        max_steps=100,
         accelerator="auto",
-        precision="16-mixed",
+        precision="bf16-mixed",
         callbacks=[lr_monitor, checkpointer],
         enable_progress_bar=True,
         enable_model_summary=True,
         log_every_n_steps=1,
-        accumulate_grad_batches=1
-        # profiler="pytorch"
+        accumulate_grad_batches=1,
+        gradient_clip_val=1.0,
     )
 
     # Pre-training evaluation on the test set
@@ -519,10 +537,13 @@ if __name__ == "__main__":
     )
 
     ## Load the best checkpoint
-    grpo_module = grpo_trainer.load_model_from_checkpoint(checkpointer.best_model_path)
+    grpo_module.save_policy_parameters("./lightning_logs/policy_model.pth")
+
+    tokenizer = grpo_module.tokenizer
+    grpo_module = None
     benchmark_model(
-        grpo_module.policy_model, 
-        grpo_module.tokenizer,
+        "./lightning_logs/policy_model.pth",
+        tokenizer,
         test_dataset,
         batch_size=16,
         top_k=50,

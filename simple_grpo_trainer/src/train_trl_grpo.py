@@ -18,7 +18,7 @@ NUM_RESPONSES_PER_EXAMPLE = 8
 LEARNING_RATE = 5e-5
 BETA = 0.04
 EPSILON = 0.2
-MAX_STEPS = 1000
+MAX_STEPS = 3
     
     
 def main():
@@ -47,14 +47,16 @@ def main():
         top_p=TOP_P,
         temperature=TEMPERATURE,
         num_generations=NUM_RESPONSES_PER_EXAMPLE,
-        gradient_accumulation_steps=4,
+        gradient_accumulation_steps=1,
         use_vllm=False,
         loss_type='grpo',
         ref_model_mixup_alpha=1.0,
         ref_model_sync_steps=64,
-        logging_steps=10,
+        logging_steps=1,
         eval_strategy="steps",
         eval_steps=100,
+        shuffle_dataset=False
+
     )
 
     # Get first 10 examples
