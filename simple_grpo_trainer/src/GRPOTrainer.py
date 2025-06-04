@@ -16,6 +16,7 @@ import torch.profiler
 
 from dataset_processor import get_gsm8k_dataset, create_dataloader, tokenize_example
 from schemas import ModelType
+from benchmark_model import benchmark_model
 
 torch.set_float32_matmul_precision('medium')
 
@@ -325,13 +326,13 @@ class SimpleGRPOModule(pl.LightningModule):
         inputs = inputs.to(self.device)
         return inputs
     
-    def get_responses_from_policy_model(
+    def get_responses_from_old_policy_model(
         self, 
         inputs: Dict[str, torch.Tensor], 
         prompt_end_index: int
     ):
         with torch.no_grad():
-            responses = self.policy_model.generate(
+            responses = self.old_policy_model.generate(
                 **inputs,
                 do_sample=True,
                 temperature = self.temperature,
@@ -360,11 +361,9 @@ class SimpleGRPOModule(pl.LightningModule):
         # all the completions will start from the size of the padded input/prompt
         prompt_end_index = inputs["input_ids"].size(1)
 
-        
-        self.policy_model.eval()
-        # Get the completions from the policy model
+        # Get the completions from the old policy model
         # t1 = time.time()
-        completions, completion_ids = self.get_responses_from_policy_model(inputs, prompt_end_index)
+        completions, completion_ids = self.get_responses_from_old_policy_model(inputs, prompt_end_index)
         # timings['get_responses_from_policy_model'] = time.time() - t1
     
         completions_mask = self._get_completions_mask(completion_ids)
@@ -470,17 +469,17 @@ class SimpleGRPOModule(pl.LightningModule):
 
 if __name__ == "__main__":
     grpo_module = SimpleGRPOModule(
-        model_name_or_path="HuggingFaceTB/SmolLM2-135M-Instruct",
+        model_name_or_path="HuggingFaceTB/SmolLM2-1.7B-Instruct",
         num_responses_per_example=8,
         top_k=50,
         top_p=0.9,
-        temperature=0.7,
+        temperature=0.9,
         max_gen_tokens=300,
-        max_steps=100,
-        num_steps_to_refresh_old_policy=16,
+        max_steps=500,
+        num_steps_to_refresh_old_policy=64,
         is_peft=False,
-        bottom_k_layers_to_train=4,
-        learning_rate=2e-5
+        bottom_k_layers_to_train=8,
+        learning_rate=5e-5
     )
     train_dataset, test_dataset = get_gsm8k_dataset()
     train_dataset = train_dataset.map(tokenize_example, fn_kwargs={"tokenizer": grpo_module.tokenizer})
@@ -494,17 +493,18 @@ if __name__ == "__main__":
         filename="best-checkpoint",
         save_top_k=1,
         mode="min",
-        every_n_train_steps=20,
+        every_n_train_steps=100,
     )
 
     grpo_trainer = Trainer(
-        max_steps=10,
+        max_steps=500,
         accelerator="auto",
         precision="16-mixed",
         callbacks=[lr_monitor, checkpointer],
         enable_progress_bar=True,
         enable_model_summary=True,
         log_every_n_steps=1,
+        accumulate_grad_batches=1
         # profiler="pytorch"
     )
 
@@ -517,3 +517,16 @@ if __name__ == "__main__":
         model=grpo_module, 
         train_dataloaders=train_dataloader, 
     )
+
+    ## Load the best checkpoint
+    grpo_module = grpo_trainer.load_model_from_checkpoint(checkpointer.best_model_path)
+    benchmark_model(
+        grpo_module.policy_model, 
+        grpo_module.tokenizer,
+        test_dataset,
+        batch_size=16,
+        top_k=50,
+        top_p=0.9,
+        temperature=0.7,
+        max_completion_length=300,
+        )

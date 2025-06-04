@@ -90,18 +90,18 @@ def write_rewards_to_csv(model_name, accuracy_rewards, format_rewards, csv_path)
         writer.writerow([model_name, mean_accuracy, mean_format])
 
 if __name__ == "__main__":
-    tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-360M-Instruct", torch_dtype=torch.bfloat16)
+    tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-1.7B-Instruct", torch_dtype=torch.bfloat16)
     dataset = get_gsm8k_dataset()
     train_dataset, test_dataset = get_gsm8k_dataset()
     test_dataset = test_dataset.map(tokenize_example, fn_kwargs={"tokenizer": tokenizer})
     
     _, responses = benchmark_model(
-        model="HuggingFaceTB/SmolLM2-360M-Instruct",
+        model="HuggingFaceTB/SmolLM2-1.7B-Instruct",
         tokenizer=tokenizer,
         test_dataset=test_dataset,
         batch_size=16,
         top_k=50,
-        top_p=0.95,
+        top_p=0.9,
         temperature=0.7,
         max_completion_length=300,
     )        
