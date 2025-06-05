@@ -25,7 +25,7 @@ def correct_answer_reward(answers: List[str], reference_answer: List[str]):
         if match:
             matches.append(match.group(4))
         else:
-                matches.append(None)
+            matches.append(None)
 
     return [
         1.0

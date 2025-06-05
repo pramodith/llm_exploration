@@ -57,7 +57,7 @@ def benchmark_model(
             responses.extend(outputs)
 
     answer_rewards = torch.tensor(
-        correct_answer_reward(responses, [a for _ in range(8) for a in test_dataset["answer"]])
+        correct_answer_reward(responses, [a for a in test_dataset["answer"] for _ in range(8) ])
     )
     print(f"Model: {model_name} has correct answer reward: {answer_rewards.mean()}")
     f_r = torch.tensor(

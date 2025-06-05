@@ -280,7 +280,7 @@ class SimpleGRPOModule(pl.LightningModule):
 
     def compute_rewards(
         self,
-        sampled_responses: List,
+        sampled_responses: List[List[str]],
         answers: List[str],
         completions_mask: torch.LongTensor,
     ):
@@ -288,7 +288,8 @@ class SimpleGRPOModule(pl.LightningModule):
         Compute the rewards for the sampled responses.
 
         Args:
-            sampled_responses (List): The sampled responses.
+            sampled_responses (List[List[str]]): The sampled responses. Each inner list corresponds to all the
+                responses in a single group.
             answers (List[str]): The answers.
             completions_mask (torch.LongTensor): The completions mask.
 
@@ -299,10 +300,11 @@ class SimpleGRPOModule(pl.LightningModule):
         answers = [
             answer for answer in answers for _ in range(self.num_responses_per_example)
         ]
+        # Flatten the list of lists
         sampled_responses = [
             response[i]
-            for i in range(self.num_responses_per_example)
             for response in sampled_responses
+            for i in range(self.num_responses_per_example)
         ]
         correct_answer_rewards = correct_answer_reward(
             answers=sampled_responses,
@@ -311,7 +313,6 @@ class SimpleGRPOModule(pl.LightningModule):
         format_rewards = format_reward(
             answers=sampled_responses,
             reference_format_regex=r"(<think>)[\s\S]*?(</think>)[\s\S]*?(<answer>)[\s\D]*(\d+)[\s\D]*(</answer>)",
-            # reference_format_regex=r"(?is).*(answer).*(\d+)"
         )
         length_rewards = length_reward(completions_mask)
         correct_answer_rewards = torch.tensor(correct_answer_rewards).view(
