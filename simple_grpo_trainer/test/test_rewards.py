@@ -1,6 +1,12 @@
 import unittest
-from simple_grpo_trainer.src.rewards import correct_answer_reward, format_reward, trl_format_reward, trl_correct_answer_reward
+from simple_grpo_trainer.src.rewards import (
+    correct_answer_reward,
+    format_reward,
+    trl_format_reward,
+    trl_correct_answer_reward,
+)
 import numpy as np
+
 
 class TestRewards(unittest.TestCase):
     def test_trl_format_reward_full_match(self):
@@ -22,7 +28,7 @@ class TestRewards(unittest.TestCase):
         completions = [
             "<think>reasoning</think> <answer>42</answer>",
             "<think>foo\n</think>\n<answer>24</answer>",
-            "No tags here"
+            "No tags here",
         ]
         rewards = trl_format_reward(completions)
         self.assertEqual(rewards, [0.5, 0.5, 0.0])
@@ -62,7 +68,12 @@ class TestRewards(unittest.TestCase):
 
     def test_correct_answer_reward_multiple_answers(self):
         """Test correct_answer_reward with multiple answers."""
-        answers = ["The answer is 42", "The answer is 24", "Answer: 42", "No number here"]
+        answers = [
+            "The answer is 42",
+            "The answer is 24",
+            "Answer: 42",
+            "No number here",
+        ]
         reference_answer = ["42", "35", "42", "100"]
         rewards = correct_answer_reward(answers, reference_answer)
         # 1.0 (match), 0.0 (wrong number), 1.0 (match), 0.25 (no number extracted)
@@ -114,8 +125,13 @@ class TestRewards(unittest.TestCase):
 
     def test_format_reward_different_group_counts(self):
         """Test format_reward with different group counts."""
-        answers = ["Product: Apple, Price: $1.99, Code: A123", "Product: Orange, Price: $0.99"]
-        reference_format_regex = r"Product: (.*), Price: \$([\d.]+)(?:, Code: ([A-Z\d]+))?"
+        answers = [
+            "Product: Apple, Price: $1.99, Code: A123",
+            "Product: Orange, Price: $0.99",
+        ]
+        reference_format_regex = (
+            r"Product: (.*), Price: \$([\d.]+)(?:, Code: ([A-Z\d]+))?"
+        )
         rewards = format_reward(answers, reference_format_regex)
         assert np.allclose(rewards, [0.3, 0.2])
 

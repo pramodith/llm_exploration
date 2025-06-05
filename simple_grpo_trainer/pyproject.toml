@@ -44,8 +44,6 @@ line-ending = "auto"
 [tool.ruff.lint]
 # Enable autofix for all fixable rules
 fixable = ["ALL"]
-# Show source for lint errors
-show-source = true
 
 [tool.ruff.isort]
 # Import sorting options

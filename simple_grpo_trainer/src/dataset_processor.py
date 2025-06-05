@@ -2,6 +2,7 @@ from datasets import Dataset, load_dataset
 from transformers import AutoTokenizer
 from torch.utils.data import DataLoader
 
+
 def extract_answer(example: dict[str, str]):
     """
     Extract the answer from the example.
@@ -15,8 +16,13 @@ def extract_answer(example: dict[str, str]):
     answer_loc = example["answer"].find("### ")
     if answer_loc == -1:
         raise ValueError("Answer marker not found in example")
-    example["answer"] = example["answer"][answer_loc + 4:].replace(",", "")
+    example["answer"] = example["answer"][answer_loc + 4 :].replace(",", "")
     return example
+
+
+def repeat_row_n_times(dataset: Dataset, n: int):
+    return Dataset.from_list([row for _ in range(n) for row in dataset]
+)
 
 
 def get_gsm8k_dataset():
@@ -32,6 +38,7 @@ def get_gsm8k_dataset():
     test_dataset = dataset["test"]
     return train_dataset, test_dataset
 
+
 def tokenize_example(example: dict[str, str], tokenizer: AutoTokenizer):
     """
     Tokenize the dataset.
@@ -43,7 +50,7 @@ def tokenize_example(example: dict[str, str], tokenizer: AutoTokenizer):
     Returns:
         Dataset: The tokenized dataset.
     """
-    system_prompt= """
+    system_prompt = """
     You are a helpful assistant that will use reasoning, long chain of thought, backtracking, and 
     self-reflection to answer math problems. You will respond using the following template:
     Question: [question]
@@ -65,8 +72,10 @@ def tokenize_example(example: dict[str, str], tokenizer: AutoTokenizer):
     ## Task
     """
     prompt = tokenizer.apply_chat_template(
-        [{"role": "system", "content": system_prompt}, 
-        {"role": "user", "content": f"Question: {example['question']}"}],
+        [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Question: {example['question']}"},
+        ],
         tokenize=False,
         add_generation_prompt=True,
         enable_thinking=True,
@@ -74,11 +83,12 @@ def tokenize_example(example: dict[str, str], tokenizer: AutoTokenizer):
     example["prompt"] = prompt
     return example
 
+
 def create_dataloader(
-    dataset: Dataset, 
+    dataset: Dataset,
     is_train: bool = False,
     batch_size: int = 1,
-    ):
+):
     """
     Create a dataloader for the dataset.
 
@@ -96,11 +106,16 @@ def create_dataloader(
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=do_shuffle)
     return dataloader
 
+
 if __name__ == "__main__":
     train_dataset, test_dataset = get_gsm8k_dataset()
     tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-135M-Instruct")
-    train_dataset = train_dataset.map(tokenize_example, fn_kwargs={"tokenizer": tokenizer})
-    test_dataset = test_dataset.map(tokenize_example, fn_kwargs={"tokenizer": tokenizer})
+    train_dataset = train_dataset.map(
+        tokenize_example, fn_kwargs={"tokenizer": tokenizer}
+    )
+    test_dataset = test_dataset.map(
+        tokenize_example, fn_kwargs={"tokenizer": tokenizer}
+    )
     train_dataloader = create_dataloader(train_dataset, is_train=False, batch_size=2)
     test_dataloader = create_dataloader(test_dataset, is_train=False, batch_size=2)
     for batch in train_dataloader:

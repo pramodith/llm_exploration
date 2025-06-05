@@ -8,7 +8,7 @@ from benchmark_model import benchmark_model
 import torch
 
 # Set model and training parameters
-MODEL_NAME = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
+MODEL_NAME = "HuggingFaceTB/SmolLM2-360M-Instruct"
 BATCH_SIZE = 4
 MAX_GEN_TOKENS = 300
 TOP_K = 50
@@ -19,19 +19,27 @@ LEARNING_RATE = 5e-5
 BETA = 0.04
 EPSILON = 0.2
 MAX_STEPS = 3
-    
-    
+
+
 def main():
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     if "gemma" in MODEL_NAME:
-        model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, attn_implementation='eager', torch_dtype=torch.bfloat16)
+        model = AutoModelForCausalLM.from_pretrained(
+            MODEL_NAME, attn_implementation="eager", torch_dtype=torch.bfloat16
+        )
     else:
-        model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, torch_dtype=torch.bfloat16)
+        model = AutoModelForCausalLM.from_pretrained(
+            MODEL_NAME, torch_dtype=torch.bfloat16
+        )
 
     # Load and tokenize dataset
     train_dataset, test_dataset = get_gsm8k_dataset()
-    train_dataset = train_dataset.map(tokenize_example, fn_kwargs={"tokenizer": tokenizer})
-    test_dataset = test_dataset.map(tokenize_example, fn_kwargs={"tokenizer": tokenizer})
+    train_dataset = train_dataset.map(
+        tokenize_example, fn_kwargs={"tokenizer": tokenizer}
+    )
+    test_dataset = test_dataset.map(
+        tokenize_example, fn_kwargs={"tokenizer": tokenizer}
+    )
 
     # TRL expects HuggingFace Datasets format, so we use train_dataset directly
     config = GRPOConfig(
@@ -41,7 +49,7 @@ def main():
         max_steps=MAX_STEPS,
         do_eval=True,
         bf16=True,
-        per_device_train_batch_size = 8,
+        per_device_train_batch_size=8,
         max_completion_length=MAX_GEN_TOKENS,
         top_k=TOP_K,
         top_p=TOP_P,
@@ -49,14 +57,14 @@ def main():
         num_generations=NUM_RESPONSES_PER_EXAMPLE,
         gradient_accumulation_steps=1,
         use_vllm=False,
-        loss_type='grpo',
+        loss_type="grpo",
         ref_model_mixup_alpha=1.0,
         ref_model_sync_steps=64,
         logging_steps=1,
         eval_strategy="steps",
         eval_steps=100,
-        shuffle_dataset=False
-
+        shuffle_dataset=False,
+        num_iterations=2,
     )
 
     # Get first 10 examples
@@ -70,7 +78,7 @@ def main():
         reward_funcs=[
             trl_format_reward,
             trl_correct_answer_reward,
-        ]
+        ],
     )
 
     trainer.train()
@@ -89,6 +97,7 @@ def main():
     )
 
     print(rewards)
-    
+
+
 if __name__ == "__main__":
     main()
