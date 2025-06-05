@@ -5,7 +5,9 @@ import torch
 
 def correct_answer_reward(answers: List[str], reference_answer: List[str]):
     """
-    Calculate the correct answer reward.
+    Calculate the correct answer reward. If the answer is correct, 
+    the reward is 1.0, if the answer is incorrect but a numerical value the reward is 0.25.
+    If the answer is not a numerical value the reward is 0.0.
 
     Args:
         answers (List[str]): The answers to calculate the reward for.
@@ -14,8 +16,6 @@ def correct_answer_reward(answers: List[str], reference_answer: List[str]):
     Returns:
         List[float]: The correct answer reward.
     """
-    # matches = [re.match(r"(?is).*answer[\D]*(\d+)", answer) for answer in answers]
-
     matches = []
     for answer in answers:
         match = re.match(
@@ -25,17 +25,11 @@ def correct_answer_reward(answers: List[str], reference_answer: List[str]):
         if match:
             matches.append(match.group(4))
         else:
-            match = re.match(r"(?is).*answer[\D]*(\d+)", answer)
-            if match:
-                matches.append(match.group(1))
-            else:
                 matches.append(None)
 
     return [
         1.0
         if answer is not None and float(answer) == float(ref_answer)
-        else 0.25
-        if answer is not None
         else 0.0
         for answer, ref_answer in zip(matches, reference_answer)
     ]
@@ -58,13 +52,8 @@ def format_reward(
     matches = [re.match(reference_format_regex, answer) for answer in answers]
     return [
         len(
-            [
-                match.group(i)
-                for i in range(1, len(match.groups()) + 1)
-                if match.group(i)
-            ]
-        )
-        * per_group_reward
+            [match.group(i) for i in range(1, len(match.groups()) + 1) if match.group(i)]
+        ) * per_group_reward
         if match
         else 0.0
         for match in matches

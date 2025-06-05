@@ -8,7 +8,7 @@ from benchmark_model import benchmark_model
 import torch
 
 # Set model and training parameters
-MODEL_NAME = "HuggingFaceTB/SmolLM2-360M-Instruct"
+MODEL_NAME = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
 BATCH_SIZE = 4
 MAX_GEN_TOKENS = 300
 TOP_K = 50
@@ -16,9 +16,9 @@ TOP_P = 0.9
 TEMPERATURE = 0.7
 NUM_RESPONSES_PER_EXAMPLE = 8
 LEARNING_RATE = 5e-5
-BETA = 0.04
+BETA = 0.0
 EPSILON = 0.2
-MAX_STEPS = 3
+MAX_STEPS = 10
 
 
 def main():
@@ -64,7 +64,7 @@ def main():
         eval_strategy="steps",
         eval_steps=100,
         shuffle_dataset=False,
-        num_iterations=2,
+        num_iterations=1,
     )
 
     # Get first 10 examples
@@ -85,18 +85,18 @@ def main():
     # @TODO: possible bug in GRPOTrainer.predict
     # predictions = trainer.predict(test_dataset)
 
-    rewards, responses = benchmark_model(
-        model=trainer.model,
-        tokenizer=tokenizer,
-        test_dataset=test_dataset,
-        batch_size=BATCH_SIZE,
-        top_k=TOP_K,
-        top_p=TOP_P,
-        temperature=TEMPERATURE,
-        max_completion_length=MAX_GEN_TOKENS,
-    )
+    # rewards, responses = benchmark_model(
+    #     model=trainer.model,
+    #     tokenizer=tokenizer,
+    #     test_dataset=test_dataset,
+    #     batch_size=BATCH_SIZE,
+    #     top_k=TOP_K,
+    #     top_p=TOP_P,
+    #     temperature=TEMPERATURE,
+    #     max_completion_length=MAX_GEN_TOKENS,
+    # )
 
-    print(rewards)
+    # print(rewards)
 
 
 if __name__ == "__main__":

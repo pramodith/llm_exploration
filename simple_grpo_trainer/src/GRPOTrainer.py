@@ -23,14 +23,6 @@ pl.seed_everything(42, workers=True)
 
 
 class SimpleGRPOModule(pl.LightningModule):
-    def save_policy_parameters(self, filepath: str):
-        """
-        Save only the policy model's parameters to the specified filepath.
-        Args:
-            filepath (str): Path to save the policy model parameters (e.g., 'policy_model.pth').
-        """
-        torch.save(self.policy_model.state_dict(), filepath)
-
     def __init__(
         self,
         model_name_or_path: str,
@@ -43,7 +35,7 @@ class SimpleGRPOModule(pl.LightningModule):
         epsilon: float = 0.2,
         num_iterations: int = 1,
         sync_ref_model_every_n_steps: int = 64,
-        ref_model_mixup_alpha: float = 1.0,
+        ref_model_mixup_alpha: float = 0.0,
         learning_rate: float = 1e-6,
         max_steps: int = 1000,
         is_peft: bool = False,
@@ -68,7 +60,9 @@ class SimpleGRPOModule(pl.LightningModule):
             epsilon (float): The epsilon clipping value
             num_iterations (int): The number of times to update the policy model for each batch.
             sync_ref_model_every_n_steps (int): The number of steps to wait before syncing the reference model.
-            ref_model_mixup_alpha (float): The alpha for the reference model mixup.
+            ref_model_mixup_alpha (float): The alpha for the reference model mixup. A value of 1.0 means that 
+                the reference model is never changed and 0 means that the reference model is the same as the policy model after
+                sync_ref_model_every_n_steps steps.
             learning_rate (float): The learning rate for the optimizer.
             max_steps (int): The maximum number of steps to train for.
             is_peft (bool): Whether to use PEFT.
@@ -584,17 +578,25 @@ class SimpleGRPOModule(pl.LightningModule):
         )
         self.val_num_correct_per_group.clear()
         return num_correct_per_group.float().mean().item()
+    
+    def save_policy_parameters(self, filepath: str):
+        """
+        Save only the policy model's parameters to the specified filepath.
+        Args:
+            filepath (str): Path to save the policy model parameters (e.g., 'policy_model.pth').
+        """
+        torch.save(self.policy_model.state_dict(), filepath)
 
 
 if __name__ == "__main__":
     grpo_module = SimpleGRPOModule(
-        model_name_or_path="HuggingFaceTB/SmolLM2-360M-Instruct",
+        model_name_or_path="HuggingFaceTB/SmolLM2-1.7B-Instruct",
         num_responses_per_example=8,
         top_k=50,
         top_p=0.9,
         temperature=0.9,
         max_gen_tokens=300,
-        max_steps=10,
+        max_steps=100,
         is_peft=False,
         bottom_k_layers_to_train=-1,
         learning_rate=5e-5,
@@ -624,14 +626,14 @@ if __name__ == "__main__":
     )
 
     grpo_trainer = Trainer(
-        max_steps=10,
+        max_steps=100,
         accelerator="auto",
         precision="bf16-mixed",
         callbacks=[lr_monitor, checkpointer],
         enable_progress_bar=True,
         enable_model_summary=True,
         log_every_n_steps=1,
-        accumulate_grad_batches=1,
+        accumulate_grad_batches=4,
         gradient_clip_val=1.0,
     )
 
@@ -646,17 +648,17 @@ if __name__ == "__main__":
     )
 
     ## Load the best checkpoint
-    # grpo_module.save_policy_parameters("./lightning_logs/policy_model.pth")
+    grpo_module.policy_model.save_pretrained("./lightning_logs/policy_model")
 
-    # tokenizer = grpo_module.tokenizer
-    # grpo_module = None
-    # benchmark_model(
-    #     "./lightning_logs/policy_model.pth",
-    #     tokenizer,
-    #     test_dataset,
-    #     batch_size=16,
-    #     top_k=50,
-    #     top_p=0.9,
-    #     temperature=0.7,
-    #     max_completion_length=300,
-    #     )
+    tokenizer = grpo_module.tokenizer
+    grpo_module = None
+    benchmark_model(
+        "./lightning_logs/policy_model",
+        tokenizer,
+        test_dataset,
+        batch_size=16,
+        top_k=50,
+        top_p=0.9,
+        temperature=0.7,
+        max_completion_length=300,
+    )

@@ -47,17 +47,17 @@ def benchmark_model(
                 temperature=temperature,
                 max_new_tokens=max_completion_length,
                 do_sample=True,
-                num_return_sequences=1,
-            )
-            prompt_length = input_ids.shape[1]
-            responses.extend(
-                tokenizer.batch_decode(
-                    outputs[:, prompt_length:], skip_special_tokens=True
-                )
+                num_return_sequences=8,
             )
 
+            prompt_length = input_ids.shape[1]
+            outputs = outputs[:, prompt_length:]
+
+            outputs = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+            responses.extend(outputs)
+
     answer_rewards = torch.tensor(
-        correct_answer_reward(responses, test_dataset["answer"])
+        correct_answer_reward(responses, [a for _ in range(8) for a in test_dataset["answer"]])
     )
     print(f"Model: {model_name} has correct answer reward: {answer_rewards.mean()}")
     f_r = torch.tensor(
@@ -74,7 +74,7 @@ def benchmark_model(
     all_rewards = all_rewards.sum(dim=-1)
     print(f"Model : {model_name} has total reward: {all_rewards.mean()}")
     write_rewards_to_csv(
-        model_name, answer_rewards, f_r, "results/gsmk_results_benchmark.csv"
+        model_name, answer_rewards, f_r, "./results/gsmk_results_benchmark.csv"
     )
     return all_rewards, responses
 
@@ -114,12 +114,11 @@ if __name__ == "__main__":
     test_dataset = test_dataset.map(
         tokenize_example, fn_kwargs={"tokenizer": tokenizer}
     )
-
     _, responses = benchmark_model(
         model="HuggingFaceTB/SmolLM2-1.7B-Instruct",
         tokenizer=tokenizer,
         test_dataset=test_dataset,
-        batch_size=16,
+        batch_size=4,
         top_k=50,
         top_p=0.9,
         temperature=0.7,
