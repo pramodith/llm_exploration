@@ -153,9 +153,10 @@ class SimpleGRPOModule(pl.LightningModule):
         
         elif model_type == ModelType.Old:
             self.policy_model = self.policy_model.eval()
-            logit_scores = self.policy_model(
-                input_ids=prompt_completion_input, attention_mask=prompt_completion_mask
-            ).logits
+            with torch.no_grad():
+                logit_scores = self.policy_model(
+                    input_ids=prompt_completion_input, attention_mask=prompt_completion_mask
+                ).logits
         
         elif model_type == ModelType.Reference:
             with torch.no_grad():
@@ -657,7 +658,7 @@ if __name__ == "__main__":
         "./lightning_logs/policy_model",
         tokenizer,
         test_dataset,
-        batch_size=16,
+        batch_size=4,
         top_k=50,
         top_p=0.9,
         temperature=0.7,
