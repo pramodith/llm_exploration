@@ -280,8 +280,8 @@ class SimpleGRPOModule(pl.LightningModule):
         # In the GRPO paper the total reward is policy_score - kl_div_loss which is maximized
         # To convert it to a loss that's minimized we need to negate it
         grpo_loss = -1.0 * (policy_score - self.beta * per_token_kl_div_loss)
-        grpo_loss = grpo_loss * completions_mask
-        grpo_loss /= completions_length.unsqueeze(-1)
+        grpo_loss = (grpo_loss * completions_mask).sum(dim=-1)
+        grpo_loss /= completions_length
         return grpo_loss.mean()
 
     def compute_rewards(
@@ -353,7 +353,7 @@ class SimpleGRPOModule(pl.LightningModule):
         return advantage_scores
 
     def on_train_batch_start(self, batch, batch_idx, dataloader_idx=0):
-        if self_step > 0 and self._step % self.sync_ref_model_every_n_steps == 0:
+        if self._step > 0 and self._step % self.sync_ref_model_every_n_steps == 0:
             logger.info("Syncing reference model")
             for ref_param, policy_param in zip(
                 self.reference_model.parameters(), self.policy_model.parameters()
@@ -442,7 +442,9 @@ class SimpleGRPOModule(pl.LightningModule):
         model will be the same for all iterations. So we only generate these values/tensors once
         and use them for all iterations.
 
-        Whereas we get the logit scores for the policy model for each iteration.
+        Whereas we get the logit scores for the policy model for each iteration. **This also means that we
+        don't need to have a separate instance for the old policy model. At all iterations the response from the 
+        `old policy` is the same as the current policy at iteration 0.**
         """
         if self._step % self.num_iterations == 0:
             inputs = self.prepare_inputs(batch)
@@ -489,7 +491,7 @@ class SimpleGRPOModule(pl.LightningModule):
             self.cache["advantage_scores"] = advantage_scores
             self.cache["prompt_ids"] = prompt_ids
             self.cache["prompt_mask"] = prompt_mask
-            self.cache["completions_length"] = completion_ids.shape[-1]
+            self.cache["completion_ids"] = completion_ids
             self.cache["completions_mask"] = completions_mask
 
             if self.num_iterations > 1 and self._step % self.num_iterations == 0:
@@ -505,7 +507,7 @@ class SimpleGRPOModule(pl.LightningModule):
             else:
                 # The old policy model is the same as the current policy model so the outputs would
                 # be the same.
-                old_policy_prob_scores = policy_prob_scores.detach()
+                old_policy_prob_scores = None
             self.cache["old_policy_prob_scores"] = old_policy_prob_scores
 
             # Compute the forward pass with gradient calculation disabled.
@@ -527,13 +529,17 @@ class SimpleGRPOModule(pl.LightningModule):
             model_type=ModelType.Active,
         )
 
+        if self.cache["old_policy_prob_scores"] is None:
+            old_policy_prob_scores = policy_prob_scores.detach()
+            self.cache["old_policy_prob_scores"] = old_policy_prob_scores
+
         loss = self.compute_grpo_loss(
             policy_prob_scores,
             self.cache["old_policy_prob_scores"],
             self.cache["reference_prob_scores"],
             self.cache["advantage_scores"],
             self.cache["completions_mask"].view(
-                -1, self.num_responses_per_example, self.completions_length
+                -1, self.num_responses_per_example, self.cache["completion_ids"].shape[-1]
             ),
         )
 
@@ -589,10 +595,10 @@ if __name__ == "__main__":
         temperature=0.9,
         max_gen_tokens=300,
         max_steps=10,
-        num_steps_to_refresh_old_policy=64,
         is_peft=False,
         bottom_k_layers_to_train=-1,
         learning_rate=5e-5,
+
     )
     train_dataset, test_dataset = get_gsm8k_dataset()
     train_dataset = train_dataset.map(
