@@ -250,7 +250,6 @@ class SimpleGRPOModule(pl.LightningModule):
         completions_length = completions_mask.sum(dim=-1)
 
         policy_ratio = torch.exp(policy_logprob_scores - old_policy_logprob_scores)
-        policy_ratio = policy_ratio * completions_mask
         clipped_policy_loss = torch.clamp(
             policy_ratio, 1 - self.epsilon, 1 + self.epsilon
         )
@@ -598,7 +597,7 @@ if __name__ == "__main__":
         top_p=0.9,
         temperature=0.9,
         max_gen_tokens=300,
-        max_steps=100,
+        max_steps=200,
         is_peft=False,
         bottom_k_layers_to_train=-1,
         learning_rate=5e-5,
@@ -628,7 +627,7 @@ if __name__ == "__main__":
     )
 
     grpo_trainer = Trainer(
-        max_steps=100,
+        max_steps=200,
         accelerator="auto",
         precision="bf16-mixed",
         callbacks=[lr_monitor, checkpointer],
@@ -653,6 +652,7 @@ if __name__ == "__main__":
     grpo_module.policy_model.save_pretrained("./lightning_logs/policy_model")
 
     tokenizer = grpo_module.tokenizer
+    
     grpo_module = None
     benchmark_model(
         "./lightning_logs/policy_model",

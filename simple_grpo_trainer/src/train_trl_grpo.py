@@ -18,7 +18,7 @@ NUM_RESPONSES_PER_EXAMPLE = 8
 LEARNING_RATE = 5e-5
 BETA = 0.0
 EPSILON = 0.2
-MAX_STEPS = 10
+MAX_STEPS = 800
 
 
 def main():
@@ -47,7 +47,7 @@ def main():
         beta=BETA,
         epsilon=EPSILON,
         max_steps=MAX_STEPS,
-        do_eval=True,
+        do_eval=False,
         bf16=True,
         per_device_train_batch_size=8,
         max_completion_length=MAX_GEN_TOKENS,
@@ -55,16 +55,15 @@ def main():
         top_p=TOP_P,
         temperature=TEMPERATURE,
         num_generations=NUM_RESPONSES_PER_EXAMPLE,
-        gradient_accumulation_steps=1,
+        gradient_accumulation_steps=4,
         use_vllm=False,
         loss_type="grpo",
         ref_model_mixup_alpha=1.0,
         ref_model_sync_steps=64,
-        logging_steps=1,
-        eval_strategy="steps",
-        eval_steps=100,
+        logging_steps=4,
         shuffle_dataset=False,
         num_iterations=1,
+        sync_ref_model=4
     )
 
     # Get first 10 examples
@@ -85,16 +84,16 @@ def main():
     # @TODO: possible bug in GRPOTrainer.predict
     # predictions = trainer.predict(test_dataset)
 
-    # rewards, responses = benchmark_model(
-    #     model=trainer.model,
-    #     tokenizer=tokenizer,
-    #     test_dataset=test_dataset,
-    #     batch_size=BATCH_SIZE,
-    #     top_k=TOP_K,
-    #     top_p=TOP_P,
-    #     temperature=TEMPERATURE,
-    #     max_completion_length=MAX_GEN_TOKENS,
-    # )
+    rewards, responses = benchmark_model(
+        model=trainer.model,
+        tokenizer=tokenizer,
+        test_dataset=test_dataset,
+        batch_size=BATCH_SIZE,
+        top_k=TOP_K,
+        top_p=TOP_P,
+        temperature=TEMPERATURE,
+        max_completion_length=MAX_GEN_TOKENS,
+    )
 
     # print(rewards)
 
