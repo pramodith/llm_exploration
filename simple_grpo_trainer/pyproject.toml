@@ -1,0 +1,56 @@
+[project]
+name = "simple-grpo-trainer"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "datasets>=3.6.0",
+    "flashinfer-python>=0.2.5",
+    "hf-transfer>=0.1.9",
+    "hf-xet>=1.1.2",
+    "lightning>=2.5.1.post0",
+    "loguru>=0.7.3",
+    "peft>=0.15.2",
+    "pytest>=8.3.5",
+    "ruff>=0.11.11",
+    "tensorboard>=2.19.0",
+    "transformers>=4.52.3",
+    "trl>=0.17.0",
+    "vllm>=0.9.0",
+]
+
+[tool.ruff]
+# Enable all recommended rules
+select = [
+    "ALL", # All rules (flake8, isort, pydocstyle, etc.)
+]
+ignore = [
+    "D203", # Compatible with D211 (one or the other for docstrings)
+    "D213", # Compatible with D212 (one or the other for docstrings)
+]
+line-length = 88
+# Exclude common virtualenv/build dirs
+exclude = [".venv", "venv", "build", "dist", "__pycache__", ".git", ".mypy_cache"]
+target-version = "py312"
+
+[tool.ruff.format]
+# Use Ruff's formatter
+indent-style = "space"
+quote-style = "double"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.ruff.lint]
+# Enable autofix for all fixable rules
+fixable = ["ALL"]
+
+[tool.ruff.isort]
+# Import sorting options
+combine-as-imports = true
+force-single-line = false
+known-first-party = ["simple_grpo_trainer"]
+
+[tool.ruff.pydocstyle]
+# Use Google style docstrings
+convention = "google"

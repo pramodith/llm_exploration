@@ -1,0 +1,12 @@
+.env
+riddles_dataset/
+.venv
+.pyc
+__pycache__
+launch.json
+.log
+*.egg-info
+.vscode
+*logs
+trainer_output
+simple_grpo_trainer/trainer_output
