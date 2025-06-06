@@ -85,7 +85,7 @@ def tokenize_example(example: dict[str, str], tokenizer: AutoTokenizer):
 
 def create_dataloader(
     dataset: Dataset,
-    is_train: bool = False,
+    do_shuffle: bool = False,
     batch_size: int = 1,
 ):
     """
@@ -93,15 +93,12 @@ def create_dataloader(
 
     Args:
         dataset (Dataset): The dataset to create a dataloader for.
-        tokenizer (AutoTokenizer): The tokenizer to use.
-        is_train (bool): Whether the dataset is for training.
+        do_shuffle (bool): Whether to shuffle the dataset.
+        batch_size (int): The batch size.
 
     Returns:
         DataLoader: The dataloader.
     """
-    do_shuffle = False
-    if is_train:
-        do_shuffle = True
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=do_shuffle)
     return dataloader
 

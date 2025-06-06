@@ -6,8 +6,7 @@ import torch
 def correct_answer_reward(answers: List[str], reference_answer: List[str]):
     """
     Calculate the correct answer reward. If the answer is correct, 
-    the reward is 1.0, if the answer is incorrect but a numerical value the reward is 0.25.
-    If the answer is not a numerical value the reward is 0.0.
+    the reward is 1.0, else 0.0.
 
     Args:
         answers (List[str]): The answers to calculate the reward for.

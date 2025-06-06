@@ -63,7 +63,7 @@ def main():
         logging_steps=4,
         shuffle_dataset=False,
         num_iterations=1,
-        sync_ref_model=4
+        sync_ref_model=True
     )
 
     # Get first 10 examples

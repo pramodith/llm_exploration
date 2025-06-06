@@ -614,8 +614,8 @@ if __name__ == "__main__":
     train_dataset = repeat_row_n_times(train_dataset, grpo_module.num_iterations)
     test_dataset = repeat_row_n_times(test_dataset, grpo_module.num_iterations)
 
-    train_dataloader = create_dataloader(train_dataset, is_train=False, batch_size=1)
-    test_dataloader = create_dataloader(test_dataset, is_train=False, batch_size=32)
+    train_dataloader = create_dataloader(train_dataset, do_shuffle=True, batch_size=1)
+    test_dataloader = create_dataloader(test_dataset, do_shuffle=False, batch_size=32)
     lr_monitor = LearningRateMonitor(logging_interval="step")
     checkpointer = ModelCheckpoint(
         monitor="train_loss",

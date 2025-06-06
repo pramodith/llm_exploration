@@ -109,7 +109,6 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(
         "HuggingFaceTB/SmolLM2-1.7B-Instruct", torch_dtype=torch.bfloat16
     )
-    dataset = get_gsm8k_dataset()
     train_dataset, test_dataset = get_gsm8k_dataset()
     test_dataset = test_dataset.map(
         tokenize_example, fn_kwargs={"tokenizer": tokenizer}
