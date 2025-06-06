@@ -13,10 +13,10 @@ BATCH_SIZE = 4
 MAX_GEN_TOKENS = 300
 TOP_K = 50
 TOP_P = 0.9
-TEMPERATURE = 0.7
+TEMPERATURE = 0.9
 NUM_RESPONSES_PER_EXAMPLE = 8
 LEARNING_RATE = 5e-5
-BETA = 0.0
+BETA = 0.04
 EPSILON = 0.2
 MAX_STEPS = 800
 
@@ -67,7 +67,6 @@ def main():
     )
 
     # Get first 10 examples
-    test_dataset = test_dataset.select(range(500))
     trainer = GRPOTrainer(
         args=config,
         model=model,
@@ -88,10 +87,10 @@ def main():
         model=trainer.model,
         tokenizer=tokenizer,
         test_dataset=test_dataset,
-        batch_size=BATCH_SIZE,
+        batch_size=4,
         top_k=TOP_K,
         top_p=TOP_P,
-        temperature=TEMPERATURE,
+        temperature=0.7,
         max_completion_length=MAX_GEN_TOKENS,
     )
 
