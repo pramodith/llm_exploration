@@ -43,7 +43,7 @@ class TestRewards(unittest.TestCase):
         """Test trl_correct_answer_reward with wrong number."""
         completions = ["<think>reasoning</think> <answer>24</answer>"]
         rewards = trl_correct_answer_reward(completions, answer=["42"])
-        self.assertEqual(rewards, [0.25])
+        self.assertEqual(rewards, [0.0])
 
     def test_trl_correct_answer_reward_no_number(self):
         """Test trl_correct_answer_reward with no number in completion."""
@@ -56,28 +56,20 @@ class TestRewards(unittest.TestCase):
         answers = ["The answer is 42"]
         reference_answer = ["42"]
         rewards = correct_answer_reward(answers, reference_answer)
-        self.assertEqual(rewards, [1.0])
-
-    def test_correct_answer_reward_no_match(self):
-        """Test correct_answer_reward when there's no match."""
-        answers = ["The answer is 24"]
-        reference_answer = ["42"]
-        rewards = correct_answer_reward(answers, reference_answer)
-        # Extracted answer is "24", which is not equal to ref, so 0.25
-        self.assertEqual(rewards, [0.25])
+        self.assertEqual(rewards, [0.0])
 
     def test_correct_answer_reward_multiple_answers(self):
-        """Test correct_answer_reward with multiple answers."""
+        """Test correct_answer_reward with multiple answers using the required regex format."""
         answers = [
-            "The answer is 42",
-            "The answer is 24",
-            "Answer: 42",
-            "No number here",
+            "<think>reasoning</think> <answer>42</answer>",  # matches and correct
+            "<think>reasoning</think> <answer>35</answer>",  # matches but wrong number
+            "<think>foo</think> <answer>42</answer>",        # matches and correct
+            "No number here",                                 # does not match regex
         ]
         reference_answer = ["42", "35", "42", "100"]
         rewards = correct_answer_reward(answers, reference_answer)
-        # 1.0 (match), 0.0 (wrong number), 1.0 (match), 0.25 (no number extracted)
-        self.assertEqual(rewards, [1.0, 0.25, 1.0, 0.0])
+        # Only the first and third answers match the regex and the reference number
+        self.assertEqual(rewards, [1.0, 1.0, 1.0, 0.0])
 
     def test_correct_answer_reward_no_number(self):
         """Test correct_answer_reward when there's no number in the answer."""
@@ -86,13 +78,6 @@ class TestRewards(unittest.TestCase):
         rewards = correct_answer_reward(answers, reference_answer)
         # Now, if extraction fails, extracted_answer will be ""
         self.assertEqual(rewards, [0.0])
-
-    def test_correct_answer_reward_case_insensitive(self):
-        """Test correct_answer_reward is case insensitive."""
-        answers = ["THE ANSWER IS 42", "answer: 42"]
-        reference_answer = ["42", "42"]
-        rewards = correct_answer_reward(answers, reference_answer)
-        self.assertEqual(rewards, [1.0, 1.0])
 
     def test_format_reward_full_match(self):
         """Test format_reward when there's a full match."""

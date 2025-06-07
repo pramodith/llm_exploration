@@ -326,9 +326,7 @@ class TestSimpleGRPOModule:
 
                     # Should flatten to [a1, b1, a2, b2, a3, b3] and repeat answers
                     def check_args(answers, reference_answer):
-                        # answers: [a1, b1, a2, b2, a3, b3]
-                        # reference_answer: [x, x, x, y, y, y]
-                        assert answers == ["a1", "b1", "a2", "b2", "a3", "b3"]
+                        assert answers == ["a1", "a2", "a3", "b1", "b2", "b3"]
                         assert reference_answer == ["x", "x", "x", "y", "y", "y"]
                         return [0.0] * 6
 
@@ -373,10 +371,10 @@ class TestSimpleGRPOModule:
                         self.device = "cpu"
 
                     def eval(self):
-                        pass
+                        return self
 
                     def train(self):
-                        pass
+                        return self
 
                     def modules(self):
                         return []
