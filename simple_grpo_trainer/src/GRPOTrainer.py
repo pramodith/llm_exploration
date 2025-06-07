@@ -461,20 +461,20 @@ class SimpleGRPOModule(pl.LightningModule):
             # logger.info(f"Sample question: {batch['question'][0]}")
             # logger.info(f"Sample answer: {batch['answer'][0]}")
             # logger.info(f"Sampled responses: {completions[0][0]}")
-            correct_answer_rewards, format_rewards, length_rewards = (
+            correct_answer_rewards, format_rewards, _ = (
                 self.compute_rewards(completions, batch["answer"], completions_mask)
             )
 
             # Log total rewards per step
             average_rewards = (
-                (correct_answer_rewards + format_rewards + length_rewards).mean().item()
+                (correct_answer_rewards + format_rewards).mean().item()
             )
             advantage_scores = self.compute_advantage_score(
-                correct_answer_rewards + format_rewards + length_rewards
+                correct_answer_rewards + format_rewards
             )
             logger.info(f"Correct answer rewards: {correct_answer_rewards.mean(dim=1)}")
             logger.info(f"Format rewards: {format_rewards.mean(dim=1)}")
-            logger.info(f"Length rewards: {length_rewards.mean(dim=1)}")
+            # logger.info(f"Length rewards: {length_rewards.mean(dim=1)}")
 
             # Repeat the prompts for each response
             prompt_ids = inputs["input_ids"].repeat_interleave(
@@ -614,8 +614,8 @@ if __name__ == "__main__":
     train_dataset = repeat_row_n_times(train_dataset, grpo_module.num_iterations)
     test_dataset = repeat_row_n_times(test_dataset, grpo_module.num_iterations)
 
-    train_dataloader = create_dataloader(train_dataset, is_train=False, batch_size=1)
-    test_dataloader = create_dataloader(test_dataset, is_train=False, batch_size=32)
+    train_dataloader = create_dataloader(train_dataset, do_shuffle=True, batch_size=1)
+    test_dataloader = create_dataloader(test_dataset, do_shuffle=False, batch_size=32)
     lr_monitor = LearningRateMonitor(logging_interval="step")
     checkpointer = ModelCheckpoint(
         monitor="train_loss",
