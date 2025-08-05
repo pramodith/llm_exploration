@@ -16,7 +16,8 @@ from datasets import load_dataset
 
 def run_experiment():
     # 1. Download images
-    image_dataset = load_dataset(config.DATASET_NAME, split="train[:1000]")
+    image_dataset = load_dataset(config.DATASET_NAME, split="test[:1000]")
+    image_dataset = image_dataset["image"]
     
     # 2. Embed images
     embedder = get_embedder(config.EMBEDDING_MODEL)

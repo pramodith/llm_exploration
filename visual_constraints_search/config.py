@@ -5,9 +5,9 @@ from typing import List
 
 DATASET_NAME: str = "nlphuji/flickr30k"  # Options: 'coco', 'flickr30k', etc.
 MAX_IMAGES: int = 1000
-EMBEDDING_MODEL: str = "clip"  # Options: 'clip', 'nomic', 'jina', 'cohere', etc.
-QUERY_MODEL: str = "gpt-4o"  # LLM for query generation
-JUDGE_MODEL: str = "gpt-4o"  # LLM for judging
+EMBEDDING_MODEL: str = "google/siglip2-large-patch16-384"  # Options: 'clip', 'nomic', 'jina', 'cohere', etc.
+QUERY_MODEL: str = "gpt-4.1-mini"  # LLM for query generation
+JUDGE_MODEL: str = "gpt-4.1"  # LLM for judging
 N_QUERIES: int = 100
 TOP_K: int = 10
 SEED: int = 42
