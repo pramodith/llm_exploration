@@ -3,8 +3,7 @@ Generates negation queries using an LLM.
 """
 from typing import List
 import openai
-from .config import NEGATION_PROMPT, NEGATION_OBJECTS, N_QUERIES, SEED
-import random
+from config import NEGATION_PROMPT, N_QUERIES, SEED
 
 def generate_negation_queries(n: int = N_QUERIES, model: str = "gpt-4o") -> List[str]:
     """

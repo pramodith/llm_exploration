@@ -3,7 +3,7 @@ Configuration and constants for the multimodal negation experiment.
 """
 from typing import List
 
-DATASET_NAME: str = "coco"  # Options: 'coco', 'flickr30k', etc.
+DATASET_NAME: str = "nlphuji/flickr30k"  # Options: 'coco', 'flickr30k', etc.
 MAX_IMAGES: int = 1000
 EMBEDDING_MODEL: str = "clip"  # Options: 'clip', 'nomic', 'jina', 'cohere', etc.
 QUERY_MODEL: str = "gpt-4o"  # LLM for query generation
