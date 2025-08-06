@@ -15,6 +15,7 @@ SEED: int = 42
 # Paths
 DATA_DIR: str = "data/"
 EMBEDDINGS_PATH: str = "embeddings.npy"
+QUERIES_PATH: str = "queries.txt"
 IMAGE_PATHS_FILE: str = "image_paths.json"
 REPORT_PATH: str = "report.md"
 

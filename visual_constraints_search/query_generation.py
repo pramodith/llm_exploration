@@ -2,7 +2,7 @@
 Generates negation queries using an LLM.
 """
 from typing import List
-import openai
+import litellm
 from config import NEGATION_PROMPT, N_QUERIES, SEED
 
 def generate_negation_queries(n: int = N_QUERIES, model: str = "gpt-4o") -> List[str]:
@@ -10,7 +10,7 @@ def generate_negation_queries(n: int = N_QUERIES, model: str = "gpt-4o") -> List
     Use an LLM to generate negation queries.
     """
     prompt = NEGATION_PROMPT.format(n=n)
-    response = openai.ChatCompletion.create(
+    response = litellm.completion(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.8,
