@@ -27,8 +27,10 @@ class SigLipEmbedder(ImageEmbedder):
     """
     def __init__(self, model_name: str = config.EMBEDDING_MODEL, batch_size: int = 8):
         self.model_name = model_name
-        self.processor = AutoProcessor.from_pretrained(model_name)
-        self.model = AutoModel.from_pretrained(model_name, device_map="auto")
+        self.processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+        self.model = AutoModel.from_pretrained(
+            model_name, device_map="auto", trust_remote_code=True,
+        )
         import torch
         self.torch = torch
         self.device = self.model.device
@@ -44,7 +46,7 @@ class SigLipEmbedder(ImageEmbedder):
             inputs = self.processor(images=batch, return_tensors="pt").to(self.device)
             with self.torch.no_grad():
                 emb = self.model.get_image_features(**inputs)
-            embs.append(emb.cpu().numpy())
+            embs.append(emb.float().cpu().numpy())
         return np.vstack(embs)
 
     def embed_text(self, texts: List[str]) -> np.ndarray:
@@ -57,7 +59,7 @@ class SigLipEmbedder(ImageEmbedder):
             inputs = self.processor(text=batch, return_tensors="pt", padding=True).to(self.device)
             with self.torch.no_grad():
                 emb = self.model.get_text_features(**inputs)
-            embs.append(emb.cpu().numpy())
+            embs.append(emb.float().cpu().numpy())
         return np.vstack(embs)
 
 def get_embedder(model_name: str) -> ImageEmbedder:

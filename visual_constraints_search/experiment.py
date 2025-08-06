@@ -3,7 +3,6 @@ Orchestrates the full negation search experiment.
 """
 import numpy as np
 import config
-from data import get_image_paths
 from embeddings import get_embedder
 from vector_store import VectorStore
 from query_generation import generate_negation_queries
@@ -41,7 +40,7 @@ def plot_topk_images(images, query, max_cols=5, save_path=None):
 
 def run_experiment():
     # 1. Download images
-    image_dataset = load_dataset(config.DATASET_NAME, split="test[:10]")
+    image_dataset = load_dataset(config.DATASET_NAME, split="test[:1000]")
     image_dataset = image_dataset["image"]
     
     # 2. Embed images
@@ -68,7 +67,8 @@ def run_experiment():
 
     # 5. For each query, embed and search
     results = []
-    for idx, query in enumerate(queries):
+    for idx, query in enumerate(queries[:10]):
+        query = "dogs"
         query_emb = embedder.embed_text([query])
         topk = store.search(query_emb, top_k=config.TOP_K)
         topk_images = [p for p, _ in topk]
@@ -76,6 +76,7 @@ def run_experiment():
         # Plot and save the top-k images for this query
         save_path = f"debug_images/topk_query_{idx+1}.png"
         plot_topk_images(topk_images, query, save_path=save_path)
+        break
         
         
         # 6. Judge
