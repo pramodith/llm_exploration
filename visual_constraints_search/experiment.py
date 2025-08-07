@@ -17,7 +17,10 @@ from dotenv import load_dotenv
 
 import matplotlib.pyplot as plt
 from bertopic import BERTopic
+from bertopic.representation import OpenAI
 import hdbscan  # Add this import
+import tiktoken
+import openai  # Ensure you have the OpenAI library installed
 
 load_dotenv()  # Load environment variables from .env file
 
@@ -27,9 +30,28 @@ def extract_topic_keywords(image_captions, n_top_topics=1000):
     Returns a set of keywords/phrases representing the main topics.
     """
     print("Extracting topics from captions using BERTopic...")
-    cluster_model = hdbscan.HDBSCAN(min_cluster_size=10, metric='euclidean', cluster_selection_method='eom')
-    vectorizer_model = CountVectorizer(stop_words="english", min_df=2, ngram_range=(1, 2))
-    topic_model = BERTopic(verbose=True, hdbscan_model=cluster_model, vectorizer_model=vectorizer_model)
+    cluster_model = hdbscan.HDBSCAN(min_cluster_size=5, metric='euclidean', cluster_selection_method='eom')
+    vectorizer_model = CountVectorizer(stop_words="english", min_df=2, ngram_range=(1, 2))       
+    # Tokenizer
+    tokenizer = tiktoken.encoding_for_model("gpt-4o")
+
+    # Create your representation model
+    client = openai.OpenAI()
+    representation_model = OpenAI(
+        client,
+        model="gpt-4.1-mini",
+        delay_in_seconds=2,
+        chat=True,
+        nr_docs=4,
+        doc_length=2048,
+        tokenizer=tokenizer
+    )
+
+    topic_model = BERTopic(
+        verbose=True, hdbscan_model=cluster_model, vectorizer_model=vectorizer_model, representation_model=representation_model
+    )
+    
+    
     topics, _ = topic_model.fit_transform(image_captions)
     topic_info = topic_model.get_topic_info()
     print("\nTop topics in captions:")
@@ -72,10 +94,13 @@ def run_experiment():
     image_dataset = load_dataset(config.DATASET_NAME, split="test")
     images = image_dataset["image"]
     
-    # 3. Generate negation queries (load if already saved)
-    if hasattr(config, "QUERIES_PATH") and os.path.exists(config.QUERIES_PATH):
-        with open(config.QUERIES_PATH, "r") as f:
-            queries = [line.strip() for line in f if line.strip()]
+    # 2. Load or extract topic keywords
+    keywords_path = getattr(config, "KEYWORDS_PATH", "topic_keywords.txt")
+    if os.path.exists(keywords_path):
+        with open(keywords_path, "r") as f:
+            topic_keywords = set(line.strip() for line in f if line.strip())
+        print("\nLoaded topic keywords from file:")
+        print(topic_keywords)
     else:
         image_captions = image_dataset["caption"]
         for caption in image_captions:
@@ -91,8 +116,16 @@ def run_experiment():
         topic_keywords = extract_topic_keywords(image_captions)
         print("\nExtracted topic keywords:")
         print(topic_keywords)
+        with open(keywords_path, "w") as f:
+            for kw in topic_keywords:
+                f.write(kw + "\n")
 
-        queries = generate_negation_queries(config.N_QUERIES, topic_keywords, config.QUERY_MODEL)
+    # 3. Generate negation queries (load if already saved)
+    if hasattr(config, "QUERIES_PATH") and os.path.exists(config.QUERIES_PATH):
+        with open(config.QUERIES_PATH, "r") as f:
+            queries = [line.strip() for line in f if line.strip()]
+    else:
+        queries = generate_negation_queries(config.N_QUERIES, topic_keywords)
         if hasattr(config, "QUERIES_PATH"):
             with open(config.QUERIES_PATH, "w") as f:
                 for q in queries:

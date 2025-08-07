@@ -18,6 +18,7 @@ EMBEDDINGS_PATH: str = "embeddings.npy"
 QUERIES_PATH: str = "queries.txt"
 IMAGE_PATHS_FILE: str = "image_paths.json"
 REPORT_PATH: str = "report.md"
+KEYWORDS_PATH: str = "keywords.txt"
 
 # Negation prompt template for LLM
 NEGATION_PROMPT: str = (
