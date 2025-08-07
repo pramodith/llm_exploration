@@ -13,10 +13,22 @@ class VectorStore:
         self.images = images
         self.norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
 
-    def search(self, query_emb: np.ndarray, top_k: int = 10) -> List[Tuple[float, float]]:
+    def simple_rank_search(self, query_emb: np.ndarray, top_k: int = 10) -> List[Tuple[float, float]]:
         """
         Returns top_k (image, similarity) tuples for the query embedding.
         """
+        sims = (self.embeddings @ query_emb.T) / (self.norms * np.linalg.norm(query_emb))
+        sims = sims.squeeze()
+        idxs = np.argsort(-sims)[:top_k]
+        return [(self.images[i], float(sims[i])) for i in idxs]
+    
+    def negative_query_rank_search(
+        self, query_emb: np.ndarray, neg_emb: np.ndarray, top_k: int = 10,
+    ) -> List[Tuple[float, float]]:
+        """
+        Returns top_k (image, similarity) tuples for the negative query embedding.
+        """
+        query_emb -= neg_emb
         sims = (self.embeddings @ query_emb.T) / (self.norms * np.linalg.norm(query_emb))
         sims = sims.squeeze()
         idxs = np.argsort(-sims)[:top_k]

@@ -9,19 +9,19 @@ from tqdm import tqdm
 
 import config
 
-class ImageEmbedder:
+class EmbedderInterface:
     """
     Abstract base class for image embedding models.
     """
-    def embed_images(self, image_paths: List[str]) -> np.ndarray:
-        """Embed a list of image file paths and return a numpy array of embeddings."""
+    def embed_images(self, images: List[float]) -> np.ndarray:
+        """Embed a list of image tensors and return a numpy array of embeddings."""
         raise NotImplementedError
 
     def embed_text(self, texts: List[str]) -> np.ndarray:
         """Embed a list of text queries and return a numpy array of embeddings."""
         raise NotImplementedError
 
-class SigLipEmbedder(ImageEmbedder):
+class MultimodalEmbedder(EmbedderInterface):
     """
     SigLip-based image and text embedder using OpenAI's CLIP model via transformers.
     """
@@ -31,8 +31,6 @@ class SigLipEmbedder(ImageEmbedder):
         self.model = AutoModel.from_pretrained(
             model_name, device_map="auto", trust_remote_code=True,
         )
-        import torch
-        self.torch = torch
         self.device = self.model.device
         self.batch_size = batch_size
 
@@ -62,11 +60,11 @@ class SigLipEmbedder(ImageEmbedder):
             embs.append(emb.float().cpu().numpy())
         return np.vstack(embs)
 
-def get_embedder(model_name: str) -> ImageEmbedder:
+def get_embedder(model_name: str) -> EmbedderInterface:
     """
     Factory to get the appropriate embedder.
     """
     if model_name == config.EMBEDDING_MODEL:
-        return SigLipEmbedder(model_name=model_name)
+        return MultimodalEmbedder(model_name=model_name)
     else:
         raise ValueError(f"Unsupported embedding model: {model_name}")

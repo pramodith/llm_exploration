@@ -8,11 +8,16 @@ from vector_store import VectorStore
 from query_generation import generate_negation_queries
 from judge import judge_images
 from report import generate_report
+from sklearn.feature_extraction.text import CountVectorizer
+
 import os
 
 from datasets import load_dataset
 from dotenv import load_dotenv
+
 import matplotlib.pyplot as plt
+from bertopic import BERTopic
+import hdbscan  # Add this import
 
 load_dotenv()  # Load environment variables from .env file
 
@@ -41,14 +46,25 @@ def plot_topk_images(images, query, max_cols=5, save_path=None):
 def run_experiment():
     # 1. Download images
     image_dataset = load_dataset(config.DATASET_NAME, split="test[:1000]")
-    image_dataset = image_dataset["image"]
+    images = image_dataset["image"]
+    image_captions = image_dataset["caption"]
+
+    # --- BERTopic: Analyze topics in captions ---
+    print("Extracting topics from captions using BERTopic...")
+    cluster_model = hdbscan.HDBSCAN(min_cluster_size=10, metric='euclidean', cluster_selection_method='eom')
+    vectorizer_model = CountVectorizer(stop_words="english", min_df=2, ngram_range=(1, 2))  # Use a pre-defined vectorizer model
+    topic_model = BERTopic(verbose=True, hdbscan_model=cluster_model, vectorizer_model=vectorizer_model)
+    topics, _ = topic_model.fit_transform(image_captions)
+    topic_info = topic_model.get_topic_info()
+    print("\nTop topics in captions:")
+    print(topic_info.head(10).to_string(index=False))
     
     # 2. Embed images
     embedder = get_embedder(config.EMBEDDING_MODEL)
     if os.path.exists(config.EMBEDDINGS_PATH):
         embeddings = np.load(config.EMBEDDINGS_PATH)
     else:
-        embeddings = embedder.embed_images(image_dataset)
+        embeddings = embedder.embed_images(images)
         np.save(config.EMBEDDINGS_PATH, embeddings)
 
     # 3. Generate negation queries (load if already saved)
@@ -63,7 +79,7 @@ def run_experiment():
                     f.write(q + "\n")
 
     # 4. Build vector store
-    store = VectorStore(embeddings, image_dataset)
+    store = VectorStore(embeddings, images)
 
     # 5. For each query, embed and search
     results = []
