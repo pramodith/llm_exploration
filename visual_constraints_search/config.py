@@ -8,7 +8,7 @@ MAX_IMAGES: int = 1000
 EMBEDDING_MODEL: str = "jinaai/jina-clip-v2"  # Options: 'clip', 'nomic', 'jina', 'cohere', etc.
 QUERY_MODEL: str = "gpt-4.1-mini"  # LLM for query generation
 JUDGE_MODEL: str = "gpt-4.1"  # LLM for judging
-N_QUERIES: int = 100
+N_QUERIES: int = 10
 TOP_K: int = 10
 SEED: int = 42
 
@@ -21,12 +21,15 @@ REPORT_PATH: str = "report.md"
 
 # Negation prompt template for LLM
 NEGATION_PROMPT: str = (
-    "Generate {n} diverse natural language queries that describe images NOT containing certain objects or scenes. "
-    "Use negations (e.g., 'no dogs', 'without trees', 'not at night'). "
-    "Return as a numbered list."
+    "You are given a list of keywords from the captions of an image dataset. You should generate a "
+    "query that searching for an image with at least one of these keywords followed by a negation constraint."
+    "##Example:\n"
+    "Keywords: tables, dogs"
+    "Query: Find images of tables, but not dogs\n"
+    "##Example:\n"
+    "Keywords: cars, trees, buildings\n"
+    "Query: Images of a car surrounded by buildings with no trees.\n"
+    "##Your turn:\n"
+    "Keywords: {keywords}\n"
+    "Query: "   
 )
-
-# List of objects/scenes to use for negation queries (can be dataset-specific)
-NEGATION_OBJECTS: List[str] = [
-    "dog", "cat", "tree", "car", "person", "water", "building", "food", "sky", "flower"
-]

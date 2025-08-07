@@ -3,6 +3,7 @@ Handles embedding images and queries using multimodal models.
 """
 from typing import List, Tuple
 import numpy as np
+import torch
 from PIL import Image
 from transformers import AutoProcessor, AutoModel
 from tqdm import tqdm
@@ -42,7 +43,7 @@ class MultimodalEmbedder(EmbedderInterface):
         for i in tqdm(range(0, len(images), self.batch_size), desc="Embedding images"):
             batch = images[i:i+self.batch_size]
             inputs = self.processor(images=batch, return_tensors="pt").to(self.device)
-            with self.torch.no_grad():
+            with torch.no_grad():
                 emb = self.model.get_image_features(**inputs)
             embs.append(emb.float().cpu().numpy())
         return np.vstack(embs)
@@ -55,7 +56,7 @@ class MultimodalEmbedder(EmbedderInterface):
         for i in tqdm(range(0, len(texts), self.batch_size), desc="Embedding texts"):
             batch = texts[i:i+self.batch_size]
             inputs = self.processor(text=batch, return_tensors="pt", padding=True).to(self.device)
-            with self.torch.no_grad():
+            with torch.no_grad():
                 emb = self.model.get_text_features(**inputs)
             embs.append(emb.float().cpu().numpy())
         return np.vstack(embs)

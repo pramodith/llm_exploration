@@ -21,6 +21,30 @@ import hdbscan  # Add this import
 
 load_dotenv()  # Load environment variables from .env file
 
+def extract_topic_keywords(image_captions, n_top_topics=1000):
+    """
+    Extracts topic keywords from image captions using BERTopic.
+    Returns a set of keywords/phrases representing the main topics.
+    """
+    print("Extracting topics from captions using BERTopic...")
+    cluster_model = hdbscan.HDBSCAN(min_cluster_size=10, metric='euclidean', cluster_selection_method='eom')
+    vectorizer_model = CountVectorizer(stop_words="english", min_df=2, ngram_range=(1, 2))
+    topic_model = BERTopic(verbose=True, hdbscan_model=cluster_model, vectorizer_model=vectorizer_model)
+    topics, _ = topic_model.fit_transform(image_captions)
+    topic_info = topic_model.get_topic_info()
+    print("\nTop topics in captions:")
+    print(topic_info.head(n_top_topics).to_string(index=False))
+    # Extract keywords for each topic (skip -1, which is usually 'outlier')
+    keywords = set()
+    for topic_id in topic_info['Topic'].head(n_top_topics):
+        if topic_id == -1:
+            continue
+        words = topic_model.get_topic(topic_id)
+        # words is a list of (word, score) tuples
+        for word, _ in words:
+            keywords.add(word)
+    return keywords
+
 def plot_topk_images(images, query, max_cols=5, save_path=None):
     """
     Plot the top-k images with the query as the title.
@@ -45,46 +69,50 @@ def plot_topk_images(images, query, max_cols=5, save_path=None):
 
 def run_experiment():
     # 1. Download images
-    image_dataset = load_dataset(config.DATASET_NAME, split="test[:1000]")
+    image_dataset = load_dataset(config.DATASET_NAME, split="test")
     images = image_dataset["image"]
-    image_captions = image_dataset["caption"]
-
-    # --- BERTopic: Analyze topics in captions ---
-    print("Extracting topics from captions using BERTopic...")
-    cluster_model = hdbscan.HDBSCAN(min_cluster_size=10, metric='euclidean', cluster_selection_method='eom')
-    vectorizer_model = CountVectorizer(stop_words="english", min_df=2, ngram_range=(1, 2))  # Use a pre-defined vectorizer model
-    topic_model = BERTopic(verbose=True, hdbscan_model=cluster_model, vectorizer_model=vectorizer_model)
-    topics, _ = topic_model.fit_transform(image_captions)
-    topic_info = topic_model.get_topic_info()
-    print("\nTop topics in captions:")
-    print(topic_info.head(10).to_string(index=False))
     
-    # 2. Embed images
-    embedder = get_embedder(config.EMBEDDING_MODEL)
-    if os.path.exists(config.EMBEDDINGS_PATH):
-        embeddings = np.load(config.EMBEDDINGS_PATH)
-    else:
-        embeddings = embedder.embed_images(images)
-        np.save(config.EMBEDDINGS_PATH, embeddings)
-
     # 3. Generate negation queries (load if already saved)
     if hasattr(config, "QUERIES_PATH") and os.path.exists(config.QUERIES_PATH):
         with open(config.QUERIES_PATH, "r") as f:
             queries = [line.strip() for line in f if line.strip()]
     else:
-        queries = generate_negation_queries(config.N_QUERIES, config.QUERY_MODEL)
+        image_captions = image_dataset["caption"]
+        for caption in image_captions:
+            max_len_caption_ind = len(caption)
+            max_len = 0
+            for i in range(len(caption)):
+                if len(caption[i]) > max_len:
+                    max_len = len(caption[i])
+                    max_len_caption_ind = i
+        image_captions = [caption[max_len_caption_ind] for caption in image_captions]
+
+        # --- BERTopic: Analyze topics in captions and extract keywords ---
+        topic_keywords = extract_topic_keywords(image_captions)
+        print("\nExtracted topic keywords:")
+        print(topic_keywords)
+
+        queries = generate_negation_queries(config.N_QUERIES, topic_keywords, config.QUERY_MODEL)
         if hasattr(config, "QUERIES_PATH"):
             with open(config.QUERIES_PATH, "w") as f:
                 for q in queries:
                     f.write(q + "\n")
+    
+    # 3. Embed images
+    embedder = get_embedder(config.EMBEDDING_MODEL)
+    if os.path.exists(config.EMBEDDINGS_PATH):
+        embeddings = np.load(config.EMBEDDINGS_PATH)
+    else:
+        embeddings = embedder.embed_images(images[:1000])
+        np.save(config.EMBEDDINGS_PATH, embeddings)
+
 
     # 4. Build vector store
-    store = VectorStore(embeddings, images)
+    store = VectorStore(embeddings, images[:1000])
 
     # 5. For each query, embed and search
     results = []
     for idx, query in enumerate(queries[:10]):
-        query = "dogs"
         query_emb = embedder.embed_text([query])
         topk = store.search(query_emb, top_k=config.TOP_K)
         topk_images = [p for p, _ in topk]
