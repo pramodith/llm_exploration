@@ -91,9 +91,9 @@ def plot_topk_images(images, query, max_cols=5, save_path=None):
 
 def run_experiment():
     # 1. Download images
-    image_dataset = load_dataset(config.DATASET_NAME, split="test")
+    image_dataset = load_dataset(config.DATASET_NAME, split="test")    
     images = image_dataset["image"]
-    
+        
     # 2. Load or extract topic keywords
     keywords_path = getattr(config, "KEYWORDS_PATH", "topic_keywords.txt")
     if os.path.exists(keywords_path):
@@ -139,9 +139,8 @@ def run_experiment():
         embeddings = embedder.embed_images(images[:1000])
         np.save(config.EMBEDDINGS_PATH, embeddings)
 
-
     # 4. Build vector store
-    store = VectorStore(embeddings, images[:1000])
+    store = VectorStore(embeddings, images)
 
     # 5. For each query, embed and search
     results = []
