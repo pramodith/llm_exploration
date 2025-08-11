@@ -9,7 +9,7 @@ from query_generation import generate_negation_queries
 from judge import judge_images
 from report import generate_report
 from sklearn.feature_extraction.text import CountVectorizer
-from transformers import AutoProcessor
+from vllm import LLM
 
 import os
 
@@ -95,6 +95,11 @@ def run_experiment():
     # 1. Download images
     image_dataset = load_dataset(config.DATASET_NAME, split="test")    
     images = image_dataset["image"]
+    
+    llm = LLM(
+        model=config.JUDGE_MODEL, trust_remote_code=True, enforce_eager=True, gpu_memory_utilization=0.8
+    )
+    
         
     # 2. Load or extract topic keywords
     keywords_path = getattr(config, "KEYWORDS_PATH", "topic_keywords.txt")
@@ -156,7 +161,7 @@ def run_experiment():
         plot_topk_images(topk_images, query, save_path=save_path)
 
         # 6. Judge
-        judgements = judge_images(query, topk_images, config.JUDGE_MODEL)
+        judgements = judge_images(query, topk_images, config.JUDGE_MODEL, llm=llm)
         precision = sum(judgement.is_relevant for judgement in judgements) / len(judgements)
 
         results.append({

@@ -60,14 +60,13 @@ def judge_images(
     images: List[Image], 
     model: str, 
     is_local: bool = True, 
-    image_resolution: tuple = (480, 480)
+    image_resolution: tuple = (480, 480),
+    llm: Optional[LLM] = None
 ) -> List[JudgeResponseFormat]:
     """
     Use an LLM to judge if each image fits the negation query.
     Returns a list of bools (True if image fits the query, False otherwise).
     """
-    if is_local:
-        llm = LLM(model=model, trust_remote_code=True, enforce_eager=True, gpu_memory_utilization=0.8)
     # For transparency, we could also pass captions/annotations if available
     judgements = []
     for image in tqdm(images, desc="Judging images"):
