@@ -12,6 +12,7 @@ dependencies = [
     "gradio>=5.42.0",
     "litellm>=1.74.1",
     "matplotlib>=3.10.3",
+    "num2words>=0.5.14",
     "pillow>=11.3.0",
     "ruff>=0.12.2",
     "scikit-learn>=1.7.1",
