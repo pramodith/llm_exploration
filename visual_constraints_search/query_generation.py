@@ -50,6 +50,7 @@ def generate_negation_queries(
         List[str]: List of generated negation queries.
     """
     queries = []
+    keywords = list(keywords)
     for _ in range(n_queries):
         # Randomly select 2 keywords from the set
         sampled_keywords = random.sample(keywords, 2)
@@ -58,4 +59,4 @@ def generate_negation_queries(
         query = f"Images of {pos_keyword}, without any {neg_keyword}."
         queries.append(query)
 
-    return [query]
+    return queries
