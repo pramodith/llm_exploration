@@ -9,6 +9,7 @@ from query_generation import generate_negation_queries
 from judge import judge_images
 from report import generate_report
 from sklearn.feature_extraction.text import CountVectorizer
+from transformers import AutoProcessor
 
 import os
 
@@ -145,7 +146,7 @@ def run_experiment():
 
     # 5. For each query, embed and search
     results = []
-    for idx, query in enumerate(queries[:10]):
+    for idx, query in enumerate(queries):
         query_emb = embedder.embed_text([query])
         topk_indices, topk_scores = zip(*store.simple_rank_search(query_emb, top_k=config.TOP_K))
         topk_images = [images[i] for i in topk_indices]
@@ -165,7 +166,6 @@ def run_experiment():
             # Store as list of arrays
             "topk_indices": topk_indices
         })
-        time.sleep(60)
 
     # Save results to file for Gradio app (as npz for images)
     os.makedirs("results", exist_ok=True)

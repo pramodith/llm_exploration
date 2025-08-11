@@ -7,9 +7,8 @@ from tqdm import tqdm
 from typing import List
 from vllm import LLM, SamplingParams
 from vllm.sampling_params import GuidedDecodingParams
+from transformers import AutoProcessor
 
-import json
-import time
 import litellm
 import io
 import base64
@@ -78,13 +77,12 @@ def judge_images(
             f"For the following query: '{query}', determine for each image if it fits the constraints. "
             "Return a list of True/False for each image."
         )
-        # In practice, you might want to pass image URLs or captions, but here we just pass file names
         images_str = pil_image_to_base64(image)
-        full_prompt = f"{prompt}\n{images_str}"
         if is_local:
-            llm_response = get_local_model_output(llm, full_prompt, image)
+            llm_response = get_local_model_output(llm, prompt, image)
             content = llm_response.outputs[0].text
         else:
+            full_prompt = f"{prompt}\n{images_str}"
             response = get_external_model_output(model, full_prompt, images_str)
             # Parse list of bools from LLM response
             content = response.choices[0].message.content
@@ -104,7 +102,7 @@ def pil_image_to_base64(img: Image.Image, format: str = "jpeg") -> str:
 if __name__ == "__main__":
     query = "Images of cats, without any dogs."
     # Create a dummy image for testing
-    img = Image.new("RGB", (100, 100), color=(255, 0, 0))  # Red square
+    img = Image.new("RGB", (480, 480), color=(255, 0, 0))  # Red square
     images = [img] * 5  # Duplicate the image for testing
     model = "HuggingFaceTB/SmolVLM2-2.2B-Instruct"  # Example model, replace with your actual model
     is_local = True
