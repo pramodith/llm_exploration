@@ -22,6 +22,7 @@ import hdbscan  # Add this import
 import tiktoken
 import openai
 import pickle
+import time
 
 load_dotenv()  # Load environment variables from .env file
 
@@ -164,6 +165,7 @@ def run_experiment():
             # Store as list of arrays
             "topk_indices": topk_indices
         })
+        time.sleep(60)
 
     # Save results to file for Gradio app (as npz for images)
     os.makedirs("results", exist_ok=True)

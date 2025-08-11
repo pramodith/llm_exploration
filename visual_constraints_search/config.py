@@ -7,9 +7,10 @@ DATASET_NAME: str = "nlphuji/flickr30k"  # Options: 'coco', 'flickr30k', etc.
 MAX_IMAGES: int = 1000
 EMBEDDING_MODEL: str = "jinaai/jina-clip-v2"  # Options: 'clip', 'nomic', 'jina', 'cohere', etc.
 QUERY_MODEL: str = "gpt-4.1-mini"  # LLM for query generation
-JUDGE_MODEL: str = "gpt-4.1"  # LLM for judging
+# JUDGE_MODEL: str = "together_ai/google/gemma-3n-E4B-it"  # LLM for judging
+JUDGE_MODEL: str = "gpt-4.1-mini"  # LLM for judging
 N_QUERIES: int = 10
-TOP_K: int = 10
+TOP_K: int = 3
 SEED: int = 42
 
 # Paths
