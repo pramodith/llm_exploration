@@ -12,10 +12,8 @@ def generate_report(results: List[Dict], report_path: str):
     """
     # Example: results = [{"query": ..., "precision": ..., "recall": ..., ...}, ...]
     precisions = [r["precision"] for r in results]
-    recalls = [r["recall"] for r in results]
     avg_precision = np.mean(precisions)
-    avg_recall = np.mean(recalls)
-
+    
     with open(report_path, "w", encoding="utf-8") as f:
         f.write("# Multimodal Negation Search Experiment\n\n")
         f.write(f"**Average Precision@k:** {avg_precision:.3f}\n\n")

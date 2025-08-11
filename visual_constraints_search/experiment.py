@@ -20,7 +20,8 @@ from bertopic import BERTopic
 from bertopic.representation import OpenAI
 import hdbscan  # Add this import
 import tiktoken
-import openai  # Ensure you have the OpenAI library installed
+import openai
+import pickle
 
 load_dotenv()  # Load environment variables from .env file
 
@@ -50,7 +51,6 @@ def extract_topic_keywords(image_captions, n_top_topics=1000):
     topic_model = BERTopic(
         verbose=True, hdbscan_model=cluster_model, vectorizer_model=vectorizer_model, representation_model=representation_model
     )
-    
     
     topics, _ = topic_model.fit_transform(image_captions)
     topic_info = topic_model.get_topic_info()
@@ -136,39 +136,43 @@ def run_experiment():
     if os.path.exists(config.EMBEDDINGS_PATH):
         embeddings = np.load(config.EMBEDDINGS_PATH)
     else:
-        embeddings = embedder.embed_images(images[:1000])
+        embeddings = embedder.embed_images(images)
         np.save(config.EMBEDDINGS_PATH, embeddings)
 
     # 4. Build vector store
-    store = VectorStore(embeddings, images)
+    store = VectorStore(embeddings)
 
     # 5. For each query, embed and search
     results = []
     for idx, query in enumerate(queries[:10]):
         query_emb = embedder.embed_text([query])
-        topk = store.search(query_emb, top_k=config.TOP_K)
-        topk_images = [p for p, _ in topk]
-        
+        topk_indices, topk_scores = zip(*store.simple_rank_search(query_emb, top_k=config.TOP_K))
+        topk_images = [images[i] for i in topk_indices]
+
         # Plot and save the top-k images for this query
         save_path = f"debug_images/topk_query_{idx+1}.png"
         plot_topk_images(topk_images, query, save_path=save_path)
-        break
-        
-        
+
         # 6. Judge
-        # fit_bools = judge_images(query, topk_paths, config.JUDGE_MODEL)
-        # precision = sum(fit_bools) / len(fit_bools)
-        # recall = sum(fit_bools) / config.TOP_K  # Approximate recall@k
-        # results.append({
-        #     "query": query,
-        #     "precision": precision,
-        #     "recall": recall,
-        #     "topk_paths": topk_paths,
-        #     "fit_bools": fit_bools,
-        # })
+        judgements = judge_images(query, topk_images, config.JUDGE_MODEL)
+        precision = sum(judgement.is_relevant for judgement in judgements) / len(judgements)
+
+        results.append({
+            "query": query,
+            "precision": precision,
+            "fit_bools": [judgement.model_dump_json() for judgement in judgements],
+            # Store as list of arrays
+            "topk_indices": topk_indices
+        })
+
+    # Save results to file for Gradio app (as npz for images)
+    os.makedirs("results", exist_ok=True)
+    # Save as a pickle file to preserve numpy arrays
+    with open("results/judgement_results.pkl", "wb") as f:
+        pickle.dump(results, f)
 
     # 7. Report
-    generate_report(results, config.REPORT_PATH)
+    # generate_report(results, config.REPORT_PATH)
 
 if __name__ == "__main__":
     run_experiment()
