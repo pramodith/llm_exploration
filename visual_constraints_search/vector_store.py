@@ -18,7 +18,7 @@ class VectorStore:
         """
         sims = (self.embeddings @ query_emb.T) / (self.norms * np.linalg.norm(query_emb))
         sims = sims.squeeze()
-        idxs = np.argsort(-sims)[:top_k]
+        idxs = np.argsort(-sims)[:top_k].tolist()
         return [(i, float(sims[i])) for i in idxs]
 
     def negative_query_rank_search(
@@ -30,5 +30,5 @@ class VectorStore:
         query_emb -= neg_emb
         sims = (self.embeddings @ query_emb.T) / (self.norms * np.linalg.norm(query_emb))
         sims = sims.squeeze()
-        idxs = np.argsort(-sims)[:top_k]
+        idxs = np.argsort(-sims)[:top_k].tolist()
         return [(i, float(sims[i])) for i in idxs]

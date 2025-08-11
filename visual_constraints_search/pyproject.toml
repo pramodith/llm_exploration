@@ -9,6 +9,7 @@ dependencies = [
     "bertopic>=0.17.3",
     "datasets==3.6.0",
     "einops>=0.8.1",
+    "gradio>=5.42.0",
     "litellm>=1.74.1",
     "matplotlib>=3.10.3",
     "pillow>=11.3.0",

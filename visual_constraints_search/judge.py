@@ -59,7 +59,7 @@ def pil_image_to_base64(img: Image.Image, format: str = "jpeg", image_resoultion
     buffered = io.BytesIO()
     # resize image if needed
     if img.size != image_resoultion:
-        img = img.resize(image_resoultion, Image.ANTIALIAS)
+        img = img.resize(image_resoultion, Image.Resampling.LANCZOS)
     img.save(buffered, format=format)
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
