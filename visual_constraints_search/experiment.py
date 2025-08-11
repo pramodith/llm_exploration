@@ -132,7 +132,7 @@ def run_experiment():
         with open(config.QUERIES_PATH, "r") as f:
             queries = [line.strip() for line in f if line.strip()]
     else:
-        queries = generate_negation_queries(config.N_QUERIES, topic_keywords)
+        queries = generate_negation_queries(config.N_QUERIES, topic_keywords, config.QUERY_MODEL)
         if hasattr(config, "QUERIES_PATH"):
             with open(config.QUERIES_PATH, "w") as f:
                 for q in queries:

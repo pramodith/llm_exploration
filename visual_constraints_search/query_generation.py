@@ -5,7 +5,8 @@ from typing import List
 from tqdm import tqdm
 import litellm
 import random
-from config import NEGATION_PROMPT, SEED
+from config import NEGATION_PROMPT, SEED, QUERY_REFINEMENT_PROMPT
+import time
 
 def llm_generate_negation_queries(
     n_queries: int, keywords: set, model: str = "gpt-4o", max_num_keywords: int = 2,
@@ -39,7 +40,7 @@ def llm_generate_negation_queries(
     return queries
 
 def generate_negation_queries(
-    n_queries: int, keywords: set
+    n_queries: int, keywords: set, model: str = "gpt-4o"
 ) -> List[str]:
     """
     Generate negation queries using an LLM.
@@ -51,12 +52,27 @@ def generate_negation_queries(
     """
     queries = []
     keywords = list(keywords)
-    for _ in range(n_queries):
-        # Randomly select 2 keywords from the set
-        sampled_keywords = random.sample(keywords, 2)
-        pos_keyword = sampled_keywords[0]
-        neg_keyword = sampled_keywords[1]
-        query = f"Images of {pos_keyword}, without any {neg_keyword}."
-        queries.append(query)
-
+    num_queries_generated = 0
+    with tqdm(total=n_queries, desc="Generating queries") as pbar:
+        while num_queries_generated < n_queries:
+            # Randomly select 2 keywords from the set
+            sampled_keywords = random.sample(keywords, 2)
+            pos_keyword = sampled_keywords[0]
+            neg_keyword = sampled_keywords[1]
+            query = f"Images of {pos_keyword}, without any {neg_keyword}."
+            refinement_prompt = QUERY_REFINEMENT_PROMPT.format(query=query)
+            refined_query = litellm.completion(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": refinement_prompt}],
+                temperature=0.2,
+            )["choices"][0]["message"]["content"].strip()
+            if refined_query.lower() != "na":
+                queries.append(refined_query)
+            else:
+                num_queries_generated += 1
+                pbar.update(1)
+                queries.append(query)
+            if num_queries_generated % 10 == 0:
+                time.sleep(5)
+    
     return queries
