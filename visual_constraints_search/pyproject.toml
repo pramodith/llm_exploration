@@ -18,4 +18,5 @@ dependencies = [
     "timm>=1.0.19",
     "torch[cpu]>=2.7.1",
     "transformers>=4.53.1",
+    "vllm>=0.10.0",
 ]
