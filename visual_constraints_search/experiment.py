@@ -99,8 +99,6 @@ def run_experiment():
     llm = LLM(
         model=config.JUDGE_MODEL, trust_remote_code=True, enforce_eager=True, gpu_memory_utilization=0.8
     )
-    
-        
     # 2. Load or extract topic keywords
     keywords_path = getattr(config, "KEYWORDS_PATH", "topic_keywords.txt")
     if os.path.exists(keywords_path):
@@ -138,6 +136,7 @@ def run_experiment():
                 for q in queries:
                     f.write(q + "\n")
     
+    return 
     # 3. Embed images
     embedder = get_embedder(config.EMBEDDING_MODEL)
     if os.path.exists(config.EMBEDDINGS_PATH):

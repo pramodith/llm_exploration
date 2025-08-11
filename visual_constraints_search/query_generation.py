@@ -5,7 +5,7 @@ from typing import List
 from tqdm import tqdm
 import litellm
 import random
-from config import NEGATION_PROMPT, SEED, QUERY_REFINEMENT_PROMPT
+from config import NEGATION_PROMPT, SEED, QUERY_DROP_PROMPT
 import time
 
 def llm_generate_negation_queries(
@@ -60,18 +60,16 @@ def generate_negation_queries(
             pos_keyword = sampled_keywords[0]
             neg_keyword = sampled_keywords[1]
             query = f"Images of {pos_keyword}, without any {neg_keyword}."
-            refinement_prompt = QUERY_REFINEMENT_PROMPT.format(query=query)
-            refined_query = litellm.completion(
-                model="gpt-4o",
+            refinement_prompt = QUERY_DROP_PROMPT.format(query=query)
+            do_keep = litellm.completion(
+                model=model,
                 messages=[{"role": "user", "content": refinement_prompt}],
                 temperature=0.2,
             )["choices"][0]["message"]["content"].strip()
-            if refined_query.lower() != "na":
-                queries.append(refined_query)
-            else:
+            if do_keep.lower() != "KEEP":
+                queries.append(query)
                 num_queries_generated += 1
                 pbar.update(1)
-                queries.append(query)
             if num_queries_generated % 10 == 0:
                 time.sleep(5)
     

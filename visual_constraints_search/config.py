@@ -8,7 +8,7 @@ MAX_IMAGES: int = 1000
 EMBEDDING_MODEL: str = "jinaai/jina-clip-v2"  # Options: 'clip', 'nomic', 'jina', 'cohere', etc.
 QUERY_MODEL: str = "gpt-4.1-mini"  # LLM for query generation
 JUDGE_MODEL: str = "HuggingFaceTB/SmolVLM2-2.2B-Instruct"  # LLM for judging
-N_QUERIES: int = 100
+N_QUERIES: int = 10
 TOP_K: int = 3
 SEED: int = 42
 
@@ -35,11 +35,16 @@ NEGATION_PROMPT: str = (
     "Query: "   
 )
 
-QUERY_REFINEMENT_PROMPT: str = (
-    "You are given a visual search query, if the query isn't realistic or doesn't make sense edit the query to make it more realistic.\n"
-    "You are only allowed to edit the query by deleting words.\n"
-    "Make sure you the query retains a negation constraint.\n, if the query can't be refined return NA.\n"
-    "Do not return any other text, just the refined query.\n, if the query is already realistic, return the query as is.\n"
+QUERY_DROP_PROMPT: str = (
+    "You are given a visual search query with a negation constraint. "
+    "If the negation constraint does not contain any objects that can be visually represented respond with DROP.\n"
+    "Otherwise, respond with KEEP\n"
+    "##Example:\n"
+    "Query: Find images of tables, but not dogs\n"
+    "Verdict: KEEP\n"
+    "##Example:\n"
+    "Query: Images of a car surrounded by buildings without any pushing.\n"
+    "Verdict: DROP\n"
     "Query: {query}\n"
-    "Refined Query: "
+    "Verdict: "
 )
