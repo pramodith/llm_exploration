@@ -4,7 +4,7 @@ Uses an LLM to judge if retrieved images fit the negation query constraints.
 from PIL import Image
 from pydantic import BaseModel, Field
 from tqdm import tqdm
-from typing import List
+from typing import List, Optional
 from vllm import LLM, SamplingParams
 from vllm.sampling_params import GuidedDecodingParams
 from transformers import AutoProcessor
