@@ -56,7 +56,13 @@ def get_local_model_output(llm: LLM, full_prompt: str, image: Image):
     )
     return llm_response[0]
 
-def judge_images(query: str, images: List[Image], model: str, is_local: bool = True) -> List[JudgeResponseFormat]:
+def judge_images(
+    query: str, 
+    images: List[Image], 
+    model: str, 
+    is_local: bool = True, 
+    image_resolution: tuple = (480, 480)
+) -> List[JudgeResponseFormat]:
     """
     Use an LLM to judge if each image fits the negation query.
     Returns a list of bools (True if image fits the query, False otherwise).
@@ -66,6 +72,8 @@ def judge_images(query: str, images: List[Image], model: str, is_local: bool = T
     # For transparency, we could also pass captions/annotations if available
     judgements = []
     for image in tqdm(images, desc="Judging images"):
+        if image.size != image_resolution:
+            image = image.resize(image_resolution, Image.Resampling.LANCZOS)
         prompt = (
             f"For the following query: '{query}', determine for each image if it fits the constraints. "
             "Return a list of True/False for each image."
@@ -85,14 +93,11 @@ def judge_images(query: str, images: List[Image], model: str, is_local: bool = T
     return judgements
 
 
-def pil_image_to_base64(img: Image.Image, format: str = "jpeg", image_resoultion: tuple = (480, 480)) -> str:
+def pil_image_to_base64(img: Image.Image, format: str = "jpeg") -> str:
     """
     Converts a PIL Image to a base64-encoded string.
     """
     buffered = io.BytesIO()
-    # resize image if needed
-    if img.size != image_resoultion:
-        img = img.resize(image_resoultion, Image.Resampling.LANCZOS)
     img.save(buffered, format=format)
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
