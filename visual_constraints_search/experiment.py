@@ -34,11 +34,17 @@ def extract_topic_keywords(image_captions, n_top_topics=1000):
     """
     print("Extracting topics from captions using BERTopic...")
     cluster_model = hdbscan.HDBSCAN(min_cluster_size=5, metric='euclidean', cluster_selection_method='eom')
-    vectorizer_model = CountVectorizer(stop_words="english", min_df=2, ngram_range=(1, 2))       
+    vectorizer_model = CountVectorizer(stop_words="english", min_df=3, ngram_range=(1, 3))       
     # Tokenizer
     tokenizer = tiktoken.encoding_for_model("gpt-4o")
 
     # Create your representation model
+    prompt = (
+        "Given this list of image captions [DOCUMENTS].\n"
+        "and the following keywords [KEYWORDS], that represent the main topics:\n"
+        "Extract the visually representable phrases from the documents that can be used to generate"
+        " queries for a visual search system.\n"
+    )
     client = openai.OpenAI()
     representation_model = OpenAI(
         client,
@@ -47,7 +53,8 @@ def extract_topic_keywords(image_captions, n_top_topics=1000):
         chat=True,
         nr_docs=4,
         doc_length=2048,
-        tokenizer=tokenizer
+        tokenizer=tokenizer,
+        diversity=0.2,
     )
 
     topic_model = BERTopic(
