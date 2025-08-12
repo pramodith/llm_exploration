@@ -5,7 +5,7 @@ from typing import List
 from tqdm import tqdm
 import litellm
 import random
-from config import NEGATION_PROMPT, SEED, QUERY_REFINEMENT_SYSTEM_PROMPT, QUERY_REFINEMENT_USER_PROMPT
+from config import NEGATION_PROMPT, SEED, QUERY_REFINEMENT_USER_PROMPT
 import time
 
 def llm_generate_negation_queries(
@@ -64,7 +64,6 @@ def generate_negation_queries(
             do_keep = litellm.completion(
                 model=model,
                 messages=[
-                    {"role": "system", "content": QUERY_REFINEMENT_SYSTEM_PROMPT},
                     {"role": "user", "content": refinement_prompt}
                 ],
                 temperature=0.2,

@@ -35,14 +35,11 @@ NEGATION_PROMPT: str = (
     "Query: "   
 )
 
-QUERY_REFINEMENT_SYSTEM_PROMPT: str = (
+QUERY_REFINEMENT_USER_PROMPT: str = (
     "The aim of the project is to measure how well a visual search system can handle negation constraints. ",
     "For example, users might want images that don't containt certain objects, colors, shapes, people of a certain demographic, etc. ",
     "You will help with deciding if a generated visual query would be meaningful to test the visual search system. ",
     "It doesn't matter how realistic the query is, since all we want to do is ensure that the visual search system can handle negation constraints. ",
-)
-
-QUERY_REFINEMENT_USER_PROMPT: str = (
     "You are given a visual search query with a negation constraint. "
     "Update the negation constraint to contain only one visually representable object or concept. "
     "If the query already contains only one negation object or concept, return it unchanged. "
