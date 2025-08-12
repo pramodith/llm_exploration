@@ -35,16 +35,26 @@ NEGATION_PROMPT: str = (
     "Query: "   
 )
 
-QUERY_DROP_PROMPT: str = (
+QUERY_REFINEMENT_SYSTEM_PROMPT: str = (
+    "The aim of the project is to measure how well a visual search system can handle negation constraints. ",
+    "For example, users might want images that don't containt certain objects, colors, shapes, people of a certain demographic, etc. ",
+    "You will help with deciding if a generated visual query would be meaningful to test the visual search system. ",
+    "It doesn't matter how realistic the query is, since all we want to do is ensure that the visual search system can handle negation constraints. ",
+)
+
+QUERY_REFINEMENT_USER_PROMPT: str = (
     "You are given a visual search query with a negation constraint. "
-    "If the negation constraint does not contain any objects that can be visually represented respond with DROP.\n"
-    "Otherwise, respond with KEEP\n"
-    "##Example:\n"
-    "Query: Find images of tables, but not dogs\n"
-    "Verdict: KEEP\n"
-    "##Example:\n"
-    "Query: Images of a car surrounded by buildings without any pushing.\n"
-    "Verdict: DROP\n"
+    "Update the negation constraint to contain only one visually representable object or concept. "
+    "If the query already contains only one negation object or concept, return it unchanged. "
+    "If the query is not suitable for visual search, return 'NA'. "
+    "Example:\n"
+    "Query: Find images of cars, but not trees without any leaves.\n"
+    "Updated Query: Find images of cars, without any trees.\n"
+    "Query: Find images of tables, but not dogs with a bone in their mouth.\n"
+    "Updated Query: Find images of tables, without any dogs.\n"
+    "Query: Find images of people partying without any babies crying.\n"
+    "Updated Query: Find images of people partying, without any babies.\n"
+    "Query: Find images of a football game without a crowd.\n"
+    "Updated Query: Find images of a football game without acrowd.\n"
     "Query: {query}\n"
-    "Verdict: "
 )
