@@ -8,7 +8,7 @@ MAX_IMAGES: int = 1000
 EMBEDDING_MODEL: str = "jinaai/jina-clip-v2"  # Options: 'clip', 'nomic', 'jina', 'cohere', etc.
 QUERY_MODEL: str = "gpt-4.1-mini"  # LLM for query generation
 JUDGE_MODEL: str = "HuggingFaceTB/SmolVLM2-2.2B-Instruct"  # LLM for judging
-N_QUERIES: int = 10
+N_QUERIES: int = 150
 TOP_K: int = 3
 SEED: int = 42
 
@@ -36,10 +36,10 @@ NEGATION_PROMPT: str = (
 )
 
 QUERY_REFINEMENT_USER_PROMPT: str = (
-    "The aim of the project is to measure how well a visual search system can handle negation constraints. ",
-    "For example, users might want images that don't containt certain objects, colors, shapes, people of a certain demographic, etc. ",
-    "You will help with deciding if a generated visual query would be meaningful to test the visual search system. ",
-    "It doesn't matter how realistic the query is, since all we want to do is ensure that the visual search system can handle negation constraints. ",
+    "The aim of the project is to measure how well a visual search system can handle negation constraints. "
+    "For example, users might want images that don't containt certain objects, colors, shapes, people of a certain demographic, etc. "
+    "You will help with deciding if a generated visual query would be meaningful to test the visual search system. "
+    "It doesn't matter how realistic the query is, since all we want to do is ensure that the visual search system can handle negation constraints. "
     "You are given a visual search query with a negation constraint. "
     "Update the negation constraint to contain only one visually representable object or concept. "
     "If the query already contains only one negation object or concept, return it unchanged. "
