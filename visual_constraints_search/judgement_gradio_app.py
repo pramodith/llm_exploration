@@ -1,8 +1,6 @@
 import gradio as gr
 import numpy as np
 import os
-from PIL import Image
-import json
 import config
 
 from judge import JudgeResponseFormat
@@ -12,7 +10,7 @@ import pickle
 image_dataset = load_dataset(config.DATASET_NAME, split="test")    
 images = image_dataset["image"]# Load results
 
-RESULTS_PATH = "results/judgement_results.pkl"
+RESULTS_PATH = "results/naive_judgement_results.pkl"
 
 if os.path.exists(RESULTS_PATH):
     with open(RESULTS_PATH, "rb") as f:

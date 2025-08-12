@@ -8,10 +8,12 @@ from vector_store import VectorStore
 from query_generation import generate_negation_queries
 from judge import judge_images
 from report import generate_report
+from utils import SearchStrategy
 from sklearn.feature_extraction.text import CountVectorizer
 from vllm import LLM
 
 import os
+import click
 
 from datasets import load_dataset
 from dotenv import load_dotenv
@@ -98,7 +100,10 @@ def plot_topk_images(images, query, max_cols=5, save_path=None):
         plt.savefig(save_path)
     plt.show()
 
-def run_experiment():
+def run_experiment(
+    search_strategy: str = SearchStrategy.NAIVE.value,
+    do_save_topk_images=False,
+):
     # 1. Download images
     image_dataset = load_dataset(config.DATASET_NAME, split="test")    
     images = image_dataset["image"]
@@ -143,7 +148,6 @@ def run_experiment():
                 for q in queries:
                     f.write(q + "\n")
     
-    return 
     # 3. Embed images
     embedder = get_embedder(config.EMBEDDING_MODEL)
     if os.path.exists(config.EMBEDDINGS_PATH):
@@ -159,15 +163,18 @@ def run_experiment():
     results = []
     for idx, query in enumerate(queries):
         query_emb = embedder.embed_text([query])
-        topk_indices, topk_scores = zip(*store.simple_rank_search(query_emb, top_k=config.TOP_K))
+        if search_strategy == SearchStrategy.NAIVE.value:
+            topk_indices, topk_scores = zip(*store.simple_rank_search(query_emb, top_k=config.TOP_K))
         topk_images = [images[i] for i in topk_indices]
 
         # Plot and save the top-k images for this query
-        save_path = f"debug_images/topk_query_{idx+1}.png"
-        plot_topk_images(topk_images, query, save_path=save_path)
+        if do_save_topk_images:
+            save_path = f"debug_images/topk_query_{idx+1}.png"
+            plot_topk_images(topk_images, query, save_path=save_path)
 
         # 6. Judge
         judgements = judge_images(query, topk_images, config.JUDGE_MODEL, llm=llm)
+        judgements = [j for j in judgements if j.reason != "Error processing image."]
         precision = sum(judgement.is_relevant for judgement in judgements) / len(judgements)
 
         results.append({
@@ -181,11 +188,18 @@ def run_experiment():
     # Save results to file for Gradio app (as npz for images)
     os.makedirs("results", exist_ok=True)
     # Save as a pickle file to preserve numpy arrays
-    with open("results/judgement_results.pkl", "wb") as f:
+    with open(f"results/{search_strategy}_judgement_results.pkl", "wb") as f:
         pickle.dump(results, f)
-
-    # 7. Report
-    # generate_report(results, config.REPORT_PATH)
+        
+    
+@click.command()
+@click.option('--search-strategy', default=SearchStrategy.NAIVE.value, help='Search strategy to use.')
+@click.option('--do-save-topk-images', is_flag=True, default=False, help='Save top-k images for each query.')
+def main(search_strategy, do_save_topk_images):
+    run_experiment(
+        search_strategy=search_strategy,
+        do_save_topk_images=do_save_topk_images,
+    )
 
 if __name__ == "__main__":
-    run_experiment()
+    main()

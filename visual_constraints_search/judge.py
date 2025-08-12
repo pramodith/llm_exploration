@@ -77,15 +77,19 @@ def judge_images(
             "Return a list of True/False for each image."
         )
         images_str = pil_image_to_base64(image)
-        if is_local:
-            llm_response = get_local_model_output(llm, prompt, image)
-            content = llm_response.outputs[0].text
-        else:
-            full_prompt = f"{prompt}\n{images_str}"
-            response = get_external_model_output(model, full_prompt, images_str)
-            # Parse list of bools from LLM response
-            content = response.choices[0].message.content
-        content = JudgeResponseFormat.model_validate_json(content)
+        try:
+            if is_local:
+                llm_response = get_local_model_output(llm, prompt, image)
+                content = llm_response.outputs[0].text
+            else:
+                full_prompt = f"{prompt}\n{images_str}"
+                response = get_external_model_output(model, full_prompt, images_str)
+                # Parse list of bools from LLM response
+                content = response.choices[0].message.content
+            content = JudgeResponseFormat.model_validate_json(content)
+        except Exception as e:
+            print(f"Error judging image: {e}")
+            content = JudgeResponseFormat(is_relevant=True, reason="Error processing image.")
         judgements.append(content)
     return judgements
 
