@@ -159,6 +159,13 @@ def run_experiment(
 
     # 5. For each query, embed and search
     results = []
+    llm = LLM(
+        model=config.JUDGE_MODEL, 
+        trust_remote_code=True, 
+        enforce_eager=True, 
+        gpu_memory_utilization=0.5
+    )
+
     for idx, query in enumerate(queries):
         query_emb = embedder.embed_text([query])
         if search_strategy == SearchStrategy.NAIVE.value:
@@ -171,10 +178,6 @@ def run_experiment(
             plot_topk_images(topk_images, query, save_path=save_path)
 
         # 6. Judge
-        llm = LLM(
-            model=config.JUDGE_MODEL, trust_remote_code=True, enforce_eager=True, gpu_memory_utilization=0.7
-        )
-
         judgements = judge_images(query, topk_images, config.JUDGE_MODEL, llm=llm)
         judgements = [j for j in judgements if j.reason != "Error processing image."]
         precision = sum(judgement.is_relevant for judgement in judgements) / len(judgements)
