@@ -170,6 +170,11 @@ def run_experiment(
         query_emb = embedder.embed_text([query])
         if search_strategy == SearchStrategy.NAIVE.value:
             topk_indices, topk_scores = zip(*store.simple_rank_search(query_emb, top_k=config.TOP_K))
+        elif search_strategy == SearchStrategy.TEXT_NEG_SUB.value:
+            negative_condition = query[query.index("without any ")+12:]  # Extract negation part
+            print(f"Negative condition is {negative_condition}")
+            negative_emb = embedder.embed_text([negative_condition])
+            topk_indices, topk_scores = zip(*store.negative_query_rank_search(query_emb, negative_emb, top_k=config.TOP_K))
         topk_images = [images[i] for i in topk_indices]
 
         # Plot and save the top-k images for this query
@@ -198,7 +203,7 @@ def run_experiment(
         
     
 @click.command()
-@click.option('--search-strategy', default=SearchStrategy.NAIVE.value, help='Search strategy to use.')
+@click.option('--search-strategy', default=SearchStrategy.TEXT_NEG_SUB.value, help='Search strategy to use.')
 @click.option('--do-save-topk-images', is_flag=True, default=False, help='Save top-k images for each query.')
 def main(search_strategy, do_save_topk_images):
     run_experiment(

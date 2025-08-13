@@ -9,7 +9,8 @@ class SearchStrategy(Enum):
     Enum for different search strategies.
     """
     NAIVE = "naive"
-    
+    TEXT_NEG_SUB = "text_neg_sub"
+
 
 def configure_litellm(api_key_env: str = "LITELLM_API_KEY"):
     """
