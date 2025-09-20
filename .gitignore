@@ -10,3 +10,6 @@ launch.json
 *logs
 trainer_output
 simple_grpo_trainer/trainer_output
+*.npy
+debug_images/
+media/
