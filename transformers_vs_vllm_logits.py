@@ -28,7 +28,7 @@ def report_mem(stage: str):
         print(f"[GPU MEM] {stage}: CUDA not available")
 
 # Configuration
-MODEL_NAME = "openai/gpt-oss-20b"  # Using Qwen3-32B
+MODEL_NAME = "Qwen/Qwen3-72B"  # Using Qwen3-72B
 NUM_PROMPTS = 100
 MAX_TOKENS = 512
 tokenizer=AutoTokenizer.from_pretrained(MODEL_NAME)
@@ -50,7 +50,9 @@ vllm_model = LLM(
     model=MODEL_NAME,
     dtype="bfloat16",
     gpu_memory_utilization=0.95,
-    enforce_eager=True
+    max_model_len=8096,
+    enforce_eager=True,
+    tensor_parallel_size=2,
 )
 report_mem("After vLLM init")
 
@@ -87,14 +89,14 @@ try:
 except Exception as e:
     print(f"(Optional vLLM internal cleanup skipped: {e})")
 
-def free_gpu_memory():
-    # Delete reference and run garbage collection to release CUDA tensors
-    del vllm_model
-    gc.collect()
-    torch.cuda.empty_cache()
-    torch.cuda.ipc_collect()  # Reclaim IPC memory blocks
+print("Average prompt length (tokens):", np.mean([len(ids) for ids in prompt_ids]))
 
-free_gpu_memory()
+# Delete reference and run garbage collection to release CUDA tensors
+del vllm_model
+gc.collect()
+torch.cuda.empty_cache()
+torch.cuda.ipc_collect()  # Reclaim IPC memory blocks
+
 report_mem("After vLLM cleanup")
 
 # Step 4 & 5: Load model in transformers and convert lm_head to fp32
@@ -171,7 +173,7 @@ vllm_probs = np.array(vllm_probs_list)
 bf16_transformers_probs = np.array(bf16_transformers_probs_list)
 fp32_transformers_probs = np.array(fp32_transformers_probs_list)
 
-def compute_and_print_correlation(vllm_probs, transformers_probs, model_name):
+def compute_and_print_correlation(vllm_probs, transformers_probs, precision):
     # Compute correlation
     correlation = pearsonr(vllm_probs, transformers_probs)[0]
     print(f"Correlation: {correlation:.6f}")
@@ -182,7 +184,7 @@ def compute_and_print_correlation(vllm_probs, transformers_probs, model_name):
     # Compute absolute probability differences for coloring
     abs_diff = np.abs(np.array(vllm_probs) - np.array(transformers_probs))
     sum_abs_diff = np.sum(abs_diff)
-
+    print(f"Sum of absolute probability differences: {sum_abs_diff:.6f}")
     plt.figure(figsize=(10, 10))
     scatter = plt.scatter(
         vllm_probs, 
@@ -198,7 +200,7 @@ def compute_and_print_correlation(vllm_probs, transformers_probs, model_name):
 
     plt.xlabel('Inference Probability', fontsize=14)
     plt.ylabel('Training Probability', fontsize=14)
-    plt.title(f'vLLM (bf16) vs Transformers (bf16 lm_head) - {model_name}', fontsize=16, fontweight='bold')
+    plt.title(f'vLLM (bf16) vs Transformers ({precision} lm_head) - {MODEL_NAME}', fontsize=16, fontweight='bold')
     plt.xlim(0, 1)
     plt.ylim(0, 1)
     plt.grid(True, alpha=0.3)
@@ -215,12 +217,12 @@ def compute_and_print_correlation(vllm_probs, transformers_probs, model_name):
             verticalalignment='top', bbox=props)
 
     plt.tight_layout()
-    plt.savefig(f'./logits_comparison_{transformers_model.lm_head.weight.dtype}.png', dpi=300, bbox_inches='tight')
-    print(f"\nPlot saved as './logits_comparison_{transformers_model.lm_head.weight.dtype}.png'")
+    plt.savefig(f'./logits_comparison_{precision}.png', dpi=300, bbox_inches='tight')
+    print(f"\nPlot saved as './logits_comparison_{precision}.png'")
 
     plt.show()
 
     print("\nDone!")
 
-compute_and_print_correlation(vllm_probs, bf16_transformers_probs, MODEL_NAME)
-compute_and_print_correlation(vllm_probs, fp32_transformers_probs, MODEL_NAME)
+compute_and_print_correlation(vllm_probs, bf16_transformers_probs, "bf16")
+compute_and_print_correlation(vllm_probs, fp32_transformers_probs, "fp32")
