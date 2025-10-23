@@ -28,7 +28,7 @@ def report_mem(stage: str):
         print(f"[GPU MEM] {stage}: CUDA not available")
 
 # Configuration
-MODEL_NAME = "Qwen/Qwen3-14B"  # Using Qwen3-14B
+MODEL_NAME = "openai/gpt-oss-120b"  # Using Qwen3-14B
 NUM_PROMPTS = 100
 MAX_TOKENS = 512
 tokenizer=AutoTokenizer.from_pretrained(MODEL_NAME)
@@ -38,7 +38,7 @@ dataset = load_dataset("trl-lib/tldr", split="train")
 prompts = [example["prompt"] for example in dataset.select(range(NUM_PROMPTS))]
 messages = [
     [
-        {"role": "system", "content":"Summarize the following reddit conversation."},
+        {"role": "developer", "content":"Summarize the following reddit conversation."},
         {"role": "user", "content": prompt}
     ]
     for prompt in prompts
@@ -49,7 +49,7 @@ print("\nLoading model in vLLM (bf16)...")
 vllm_model = LLM(
     model=MODEL_NAME,
     dtype="bfloat16",
-    gpu_memory_utilization=0.7,
+    gpu_memory_utilization=0.95,
     max_model_len=2048,
     enforce_eager=True
 )
@@ -108,13 +108,13 @@ report_mem("After HF model load")
 embed_ptr_before = transformers_model.model.embed_tokens.weight.data_ptr()
 lm_ptr_before = transformers_model.lm_head.weight.data_ptr()
 
-# # Clone + promote to fp32 (new Parameter so it no longer shares storage).
-# transformers_model.lm_head.weight = torch.nn.Parameter(transformers_model.lm_head.weight.detach().clone().float())
+# Clone + promote to fp32 (new Parameter so it no longer shares storage).
+transformers_model.lm_head.weight = torch.nn.Parameter(transformers_model.lm_head.weight.detach().clone().float())
 
-# def cast_to_fp32_hook(module, input):
-#     return input[0].to(torch.float32)
+def cast_to_fp32_hook(module, input):
+    return input[0].to(torch.float32)
 
-# transformers_model.lm_head.register_forward_pre_hook(cast_to_fp32_hook)
+transformers_model.lm_head.register_forward_pre_hook(cast_to_fp32_hook)
 
 print(f"Embedding weight dtype: {transformers_model.model.embed_tokens.weight.dtype}")
 print(f"lm_head weight dtype (after untie & cast): {transformers_model.lm_head.weight.dtype}")
@@ -181,7 +181,7 @@ plt.plot([0, 1], [0, 1], 'r--', linewidth=2, label='Perfect Precision (y=x)')
 
 plt.xlabel('Inference Probability', fontsize=14)
 plt.ylabel('Training Probability', fontsize=14)
-plt.title('vLLM (bf16) vs Transformers (bf16 lm_head)', fontsize=16, fontweight='bold')
+plt.title('vLLM (bf16) vs Transformers (fp32 lm_head)', fontsize=16, fontweight='bold')
 plt.xlim(0, 1)
 plt.ylim(0, 1)
 plt.grid(True, alpha=0.3)
@@ -198,8 +198,8 @@ plt.text(0.05, 0.95, textstr, transform=plt.gca().transAxes, fontsize=12,
          verticalalignment='top', bbox=props)
 
 plt.tight_layout()
-plt.savefig('logits_comparison.png', dpi=300, bbox_inches='tight')
-print("\nPlot saved as 'logits_comparison.png'")
+plt.savefig(f'./logits_comparison_{transformers_model.lm_head.weight.dtype}.png', dpi=300, bbox_inches='tight')
+print(f"\nPlot saved as './logits_comparison_{transformers_model.lm_head.weight.dtype}.png'")
 
 plt.show()
 
