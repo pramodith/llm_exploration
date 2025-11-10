@@ -126,8 +126,53 @@ class MoE(nn.Module):
         expert_weights, chosen_expert_indices = self.moe_router(x, attention_mask)
         output = self.moe_mlp(x, attention_mask, expert_weights, chosen_expert_indices)
         return output
+
+class RopeEmbeddings(nn.Module):
+    def __init__(self, hidden_dim: int, theta: float = 1e4):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.theta = theta
+        freq = self.theta ** -(2*torch.arange(0, self.hidden_dim//2)/self.hidden_dim)
+        self.register_buffer("freq", freq, persistent=False)
+    
+    def apply_rot_embs(self, x, cos_pos_thetas, sin_pos_thetas):
+        first_half, second_half = torch.chunk(x, 2, -1)
+        first = first_half * cos_pos_thetas - second_half * sin_pos_thetas
+        second = second_half * cos_pos_thetas + first_half * sin_pos_thetas
+        embs = torch.cat((first, second), -1)
+        return embs
+    
+    def forward(self, q: torch.Tensor, k: torch.Tensor):
+        pos_ids = torch.arange(0, q.shape[1]) # [S]
+        pos_thetas = torch.outer(pos_ids, self.freq)  # [S, H/2]
+        cos_pos_thetas = torch.cos(pos_thetas) # [S, H/2]
+        sin_pos_thetas = torch.sin(pos_thetas) # [S, H/2]
+        q_embs = self.apply_rot_embs(q, cos_pos_thetas, sin_pos_thetas)
+        k_embs = self.apply_rot_embs(k, cos_pos_thetas, sin_pos_thetas)
+        return q_embs, k_embs
         
 
+class AbsoluteSinusoidalEmbeddings(nn.Module):
+    
+    def __init__(self, hidden_dim, theta=1e4):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.theta = theta
+        inv_freq = 1/(self.theta**(2*torch.arange(0, hidden_dim//2)/hidden_dim))  # H/2      
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        
+    def forward(self, x):
+        pos_ids = torch.arange(0, x.shape[1])
+        with torch.no_grad():
+            pos_thetas = torch.outer(pos_ids, self.inv_freq)
+            cos_pos_thetas = torch.cos(pos_thetas)
+            sin_pos_thetas = torch.sin(pos_thetas)
+            pos_embs = torch.zeros_like(x)
+            pos_embs[:, :, ::2] = sin_pos_thetas
+            pos_embs[:, :, 1::2] = cos_pos_thetas
+        
+        embs = x + pos_embs
+        return embs
 
 class SelfAttention(nn.Module):
     
@@ -147,6 +192,7 @@ class SelfAttention(nn.Module):
         self.attention_scaler = (hidden_size // num_heads) ** 0.5
         self.num_heads = num_heads
         self.num_kv_groups = num_kv_groups
+        self.rotary_embs = RopeEmbeddings(hidden_size)
 
     def forward(self, x: torch.Tensor, attention_mask: torch.tensor) -> torch.tensor:
         batch_size = x.shape[0]
@@ -154,7 +200,7 @@ class SelfAttention(nn.Module):
 
         query = self.q(x).view(batch_size, seq_len, self.num_heads, -1)
         key = self.k(x).view(batch_size, seq_len, self.num_kv_groups, -1)
-        # TODO: ROPE for query and key
+        query, key = self.rotary_embs(query, key)
         value = self.v(x).view(batch_size, seq_len, self.num_kv_groups, -1)
         
         if self.num_kv_groups != self.num_heads:
@@ -238,6 +284,12 @@ if __name__ == "__main__":
     # model = TransformerModel(100, 10, 1, 10, None, 20)
     # model.forward(torch.randint(0, 100, size=(2, 8)))
     
-    moe = MoE(64, 4, 16, 2)
-    out = moe(torch.randn((2, 6, 64)), torch.ones((2, 6, 1)))
-    print(out)
+    # moe = MoE(64, 4, 16, 2)
+    # out = moe(torch.randn((2, 6, 64)), torch.ones((2, 6, 1)))
+    # print(out)
+    
+    # rope = RopeEmbeddings(64)
+    # rope.forward(torch.rand(2, 12, 64), torch.rand(2, 12, 64))
+
+    absolute_pos = AbsoluteSinusoidalEmbeddings(64)
+    absolute_pos(torch.rand(2, 12, 64))
