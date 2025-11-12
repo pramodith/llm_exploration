@@ -2,6 +2,19 @@ import torch
 import torch.nn as nn
 from typing import Optional
 
+class Dropout(nn.Module):
+    
+    def __init__(self, p: float):
+        super().__init__()
+        self.p = p
+        
+    def forward(self, x: torch.Tensor)-> torch.Tensor:
+        if self.training:
+            mask = torch.bernoulli(torch.full_like(x, self.p))
+            # Preserve mean by scaling by (1-self.p)
+            x = (x * mask)/(1-self.p)
+        return x
+
 class RMSNorm(nn.Module):
     
     def __init__(self, hidden_size: int, eps: float = 1e-6):
@@ -16,6 +29,20 @@ class RMSNorm(nn.Module):
         output = x / rms * self.weight
         return output
         
+
+class LayerNorm(nn.Module):
+    def __init__(self, hidden_size: int, eps: float=1e-6):
+        super().__init__()
+        self.scale = nn.Parameter(torch.ones(hidden_size))
+        self.shift = nn.Parameter(torch.zeros(hidden_size))
+        self.eps = eps
+    
+    def forward(self, x: torch.Tensor)-> torch.Tensor:
+        mean = x.mean(dim=-1, keepdim=True)
+        std = x.std(dim=-1, keepdim=True)
+        x  = self.scale * ((x-mean)/(std+self.eps)) + self.shift
+        return x
+    
 
 class FFN(nn.Module):
     
@@ -291,5 +318,8 @@ if __name__ == "__main__":
     # rope = RopeEmbeddings(64)
     # rope.forward(torch.rand(2, 12, 64), torch.rand(2, 12, 64))
 
-    absolute_pos = AbsoluteSinusoidalEmbeddings(64)
-    absolute_pos(torch.rand(2, 12, 64))
+    # absolute_pos = AbsoluteSinusoidalEmbeddings(64)
+    # absolute_pos(torch.rand(2, 12, 64))
+    
+    dropout = Dropout(0.5)
+    print(dropout(torch.ones(2,4)))
