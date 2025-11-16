@@ -42,8 +42,20 @@ class LayerNorm(nn.Module):
         std = x.std(dim=-1, keepdim=True)
         x  = self.scale * ((x-mean)/(std+self.eps)) + self.shift
         return x
-    
 
+class SwigluFFN(nn.Module):
+    
+    def __init__(self, hidden_size: int, intermediate_size: int):
+        super().__init__()
+        self.up_proj = nn.Linear(hidden_size, 2 * intermediate_size)
+        self.down_proj = nn.Linear(intermediate_size, hidden_size)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        gate, up = torch.chunk(self.up_proj(x), 2, -1)
+        up = torch.nn.functional.silu(gate) * up
+        down = self.down_proj(up)
+        return x + down
+    
 class FFN(nn.Module):
     
     def __init__(self, hidden_size: int, intermediate_size: int):
@@ -321,5 +333,8 @@ if __name__ == "__main__":
     # absolute_pos = AbsoluteSinusoidalEmbeddings(64)
     # absolute_pos(torch.rand(2, 12, 64))
     
-    dropout = Dropout(0.5)
-    print(dropout(torch.ones(2,4)))
+    # dropout = Dropout(0.5)
+    # print(dropout(torch.ones(2,4)))
+    
+    swiglu = SwigluFFN(4, 16)
+    print(swiglu(torch.randn(2, 3, 4)))
