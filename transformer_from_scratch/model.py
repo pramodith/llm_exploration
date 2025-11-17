@@ -1,6 +1,9 @@
 import torch
 import torch.nn as nn
 from typing import Optional
+from torch.amp.autocast_mode import autocast
+from torch.amp.grad_scaler import GradScaler
+
 
 class Dropout(nn.Module):
     
@@ -181,8 +184,11 @@ class RopeEmbeddings(nn.Module):
         embs = torch.cat((first, second), -1)
         return embs
     
-    def forward(self, q: torch.Tensor, k: torch.Tensor):
-        pos_ids = torch.arange(0, q.shape[1]) # [S]
+    def forward(self, q: torch.Tensor, k: torch.Tensor, position: int = None):
+        if not position:
+            pos_ids = torch.arange(0, q.shape[1]) # [S]
+        else: 
+            pos_ids = torch.LongTensor(position)
         pos_thetas = torch.outer(pos_ids, self.freq)  # [S, H/2]
         cos_pos_thetas = torch.cos(pos_thetas) # [S, H/2]
         sin_pos_thetas = torch.sin(pos_thetas) # [S, H/2]
@@ -232,15 +238,31 @@ class SelfAttention(nn.Module):
         self.num_heads = num_heads
         self.num_kv_groups = num_kv_groups
         self.rotary_embs = RopeEmbeddings(hidden_size)
+        self.cache = {}
 
-    def forward(self, x: torch.Tensor, attention_mask: torch.tensor) -> torch.tensor:
+    def forward(
+            self, 
+            x: torch.Tensor, 
+            attention_mask: torch.Tensor,
+            layer_num: int,
+            position_idx: int = None,
+        ) -> torch.Tensor:
         batch_size = x.shape[0]
+        # At inference time seq_len = 1
         seq_len = x.shape[1]
-
+        
         query = self.q(x).view(batch_size, seq_len, self.num_heads, -1)
         key = self.k(x).view(batch_size, seq_len, self.num_kv_groups, -1)
-        query, key = self.rotary_embs(query, key)
+        query, key = self.rotary_embs(query, key, position_idx)
         value = self.v(x).view(batch_size, seq_len, self.num_kv_groups, -1)
+
+        if not self.training:
+            if self.cache:
+                cached_key, cached_value = self.cache["k"], self.cache["v"]
+                key = torch.cat([cached_key, key], dim=1)
+                value = torch.cat([cached_value, value], dim=1)
+            self.cache["k"] = key
+            self.cache["v"] = value
         
         if self.num_kv_groups != self.num_heads:
             key = torch.repeat_interleave(key, self.num_heads//self.num_kv_groups, 2)
@@ -257,7 +279,6 @@ class SelfAttention(nn.Module):
         output = self.o(output)
         output += x
         return output
-
 
 
 class TransformerBlock(nn.Module):
