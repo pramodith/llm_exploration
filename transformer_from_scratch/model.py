@@ -271,7 +271,10 @@ class SelfAttention(nn.Module):
         query = query.permute(0, 2, 1, 3)
         key = key.permute(0, 2, 1, 3)
         attention = torch.matmul(query, key.transpose(-2, -1))/self.attention_scaler
-        attention = attention * attention_mask.unsqueeze(1)
+        # e**(float("-inf")) = 0 & e**0 = 1
+        attention_mask[attention_mask==0] = float("-inf")
+        attention_mask[attention_mask==1] = 0.0
+        attention = attention + attention_mask
         attention_weights = torch.softmax(attention, -1)
         value = value.permute(0, 2, 1, 3)
         output = torch.matmul(attention_weights, value)
