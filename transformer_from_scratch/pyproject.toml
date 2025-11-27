@@ -8,4 +8,5 @@ dependencies = [
     "ipykernel>=7.1.0",
     "numpy>=2.3.4",
     "torch>=2.9.0",
+    "transformers>=4.57.3",
 ]
