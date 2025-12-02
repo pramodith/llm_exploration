@@ -31,7 +31,7 @@ def modify_model(model, k):
     """
     print(f"Modifying model with K={k}...")
     count = 0
-    for i, layer in enumerate(model.model.layers):
+    for i, layer in enumerate(model.model.layers[20:28]):
         # We want to KEEP attention every K layers.
         # So if (i + 1) % k != 0, we DISABLE it.
         if (i + 1) % k != 0:
@@ -42,10 +42,12 @@ def modify_model(model, k):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--k", type=int, default=1, help="Frequency of attention layers (1 = all attention, 2 = every 2nd layer has attention)")
+    parser.add_argument("--k", type=int, default=2, help="Frequency of attention layers (1 = all attention, 2 = every 2nd layer has attention)")
     parser.add_argument("--model_name", type=str, default="HuggingFaceTB/SmolLM2-360M-Instruct")
     parser.add_argument("--output_dir", type=str, default="./models")
     parser.add_argument("--test", action="store_true", help="Run in test mode (no benchmarking, just check model)")
+    parser.add_argument("--max_samples", type=int, default=100, help="Maximum number of samples to run")
+    parser.add_argument("--batch_size", type=int, default=4, help="Batch size for evaluation")
     args = parser.parse_args()
 
     print(f"Loading model {args.model_name}...")
@@ -81,15 +83,16 @@ def main():
     # Let's try standard names.
     
     #tasks = "community|hellaswag|0|0,community|piqa|0|0,community|arc:easy|0|0"
-    tasks = 
+    tasks = "hellaswag"
     
     print("Running lighteval...")
     cmd = [
         "lighteval",
         "accelerate",
-        f"model_name={model_save_path}",
+        f"model_name={model_save_path},dtype=bfloat16,batch_size={args.batch_size}",
         tasks,
         f"--output-dir={args.output_dir}",
+        f"--max-samples={args.max_samples}"
     ]
     
     print(f"Command: {' '.join(cmd)}")

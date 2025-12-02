@@ -5,6 +5,8 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "hf-xet>=1.2.0",
+    "huggingface-hub[cli]>=0.36.0",
     "lighteval>=0.13.0",
     "torch>=2.9.1",
     "transformers>=4.57.3",
