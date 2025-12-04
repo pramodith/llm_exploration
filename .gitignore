@@ -13,3 +13,6 @@ simple_grpo_trainer/trainer_output
 *.npy
 debug_images/
 media/
+wandb/
+models/
+pyrightconfig.json
