@@ -1,6 +1,3 @@
-"""
-Training script for attention skipping experiments with gradual layer dropping.
-"""
 import torch
 import torch.nn as nn
 from collections import defaultdict
@@ -10,28 +7,39 @@ from datetime import datetime
 from typing import Optional
 import logging
 import argparse
+import sys # Added import for sys
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import wandb
 
-logging.basicConfig(level=logging.INFO)
+# Explicitly configure the logger to ensure messages are always printed to console
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Clear existing handlers to prevent duplicate messages if the cell is run multiple times
+if logger.handlers:
+    logger.handlers.clear()
+
+handler = logging.StreamHandler(sys.stdout) # Use sys.stdout for clarity in Colab
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
 
 class CustomIdentityLayer(nn.Module):
     """A custom identity layer that returns zeros for hidden states."""
-    
+
     def __init__(self):
         super().__init__()
-    
+
     def forward(self, hidden_states, *args, **kwargs):
         """Return zeros matching the shape of hidden_states."""
         return hidden_states
 
 class LayerDropConfig:
     """Configuration for gradual layer dropping strategy."""
-    
+
     def __init__(
         self,
         initial_layers_to_drop: int = 1,
@@ -49,7 +57,7 @@ class LayerDropConfig:
 
 class DroppedLayerModel(nn.Module):
     """Model with gradual layer dropping capability."""
-    
+
     def __init__(self, model, num_layers: int, config: LayerDropConfig):
         super().__init__()
         self.model = model
@@ -59,24 +67,25 @@ class DroppedLayerModel(nn.Module):
         self.last_drop_step = 0
         self.dropped_layers = []
         self.layers = self.model.model.layers
-    
-    def patch_dropped_layers(self, step: int):
+
+    def patch_dropped_layers(self, latest_loss: float, step: int):
         """Determine which layers to drop at current training step."""
-        if (step - self.last_drop_step) % self.config.drop_interval_steps == 0:
-            if not self.dropped_layers:
-                self.dropped_layers.append(1)
-            else:
-                self.dropped_layers.append(self.dropped_layers[-1] + 2)
+        if not self.dropped_layers:
+            self.dropped_layers.append(1)
             self.layers[self.dropped_layers[-1]] = CustomIdentityLayer()
-    
+        else:
+            if latest_loss < self.config.loss_threshold:
+                self.dropped_layers.append(self.dropped_layers[-1] + 2)
+                self.layers[self.dropped_layers[-1]] = CustomIdentityLayer()
+
     def forward(self, *args, **kwargs):
         """Forward pass with layer dropping."""
         return self.model(*args, **kwargs)
-    
+
     def get_dropped_layers(self) -> list:
         """Get current set of dropped layer indices."""
         return self.dropped_layers
-    
+
     def get_current_drop_count(self) -> int:
         """Get current number of layers being dropped."""
         return self.current_layers_to_drop
@@ -84,12 +93,12 @@ class DroppedLayerModel(nn.Module):
 
 class LayerWiseComparisonLoss(nn.Module):
     """MSE loss between corresponding layers of two models."""
-    
+
     def __init__(self, use_only_last_layer: bool = False):
         super().__init__()
         self.mse_loss = nn.MSELoss()
         self.use_only_last_layer = use_only_last_layer
-    
+
     def forward(
         self,
         model_active_outputs: list[torch.Tensor],
@@ -98,7 +107,7 @@ class LayerWiseComparisonLoss(nn.Module):
     ) -> tuple[torch.Tensor, dict]:
         """
         Compute MSE loss between layers after dropped layers.
-        
+
         Args:
             model_active_outputs: Hidden states from active model
             model_frozen_outputs: Hidden states from frozen model
@@ -114,11 +123,11 @@ class LayerWiseComparisonLoss(nn.Module):
                 if i not in dropped_layer_indices:
                     active_hidden = model_active_outputs[i]
                     frozen_hidden = model_frozen_outputs[i]
-                    
+
                     # Ensure shapes match
                     if active_hidden.shape != frozen_hidden.shape:
                         frozen_hidden = frozen_hidden[:, -active_hidden.shape[1]:, :]
-                    
+
                     loss = self.mse_loss(active_hidden, frozen_hidden.detach())
                     total_loss += loss
                     layer2loss[i] = loss.detach()
@@ -127,15 +136,15 @@ class LayerWiseComparisonLoss(nn.Module):
             # Only compare the last layer
             active_hidden = model_active_outputs[-1]
             frozen_hidden = model_frozen_outputs[-1]
-            
+
             if active_hidden.shape != frozen_hidden.shape:
                 frozen_hidden = frozen_hidden[:, -active_hidden.shape[1]:, :]
-            
+
             loss = self.mse_loss(active_hidden, frozen_hidden.detach())
             total_loss += loss
             layer2loss[len(model_active_outputs) - 1] = loss.detach()
             loss_count += 1
-            
+
         return total_loss / max(loss_count, 1), layer2loss
 
 
@@ -149,14 +158,14 @@ def get_dataset(
 ):
     """Load streaming dataset from Hugging Face."""
     logger.info(f"Loading {dataset_name} dataset...")
-    
+
     dataset = load_dataset(
         dataset_name,
         subset,
         split="train",
         streaming=True,
     )
-    
+
     def tokenize_function(examples):
         """Tokenize function for dataset."""
         texts = examples.get("text", examples.get("content", []))
@@ -171,13 +180,13 @@ def get_dataset(
             "input_ids": tokenized["input_ids"],
             "attention_mask": tokenized["attention_mask"],
         }
-    
+
     # Remove unnecessary columns
     dataset = dataset.map(tokenize_function, batched=True, remove_columns=dataset.column_names)
-    
+
     if max_samples:
         dataset = dataset.take(max_samples)
-    
+
     return dataset
 
 
@@ -185,7 +194,7 @@ def collate_fn(batch):
     """Collate function for DataLoader."""
     input_ids = torch.stack([torch.tensor(item["input_ids"]) for item in batch])
     attention_mask = torch.stack([torch.tensor(item["attention_mask"]) for item in batch])
-    
+
     return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
@@ -194,7 +203,7 @@ def collate_fn(batch):
 
 class Trainer:
     """Trainer for the layer dropping experiment."""
-    
+
     def __init__(
         self,
         model_name: str = "HuggingFaceTB/SmolLM2-360M-Instruct",
@@ -221,9 +230,9 @@ class Trainer:
         self.log_interval = log_interval
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.use_scheduler = use_scheduler
-        
+
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Initialize models
         logger.info(f"Loading model: {model_name}")
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -237,14 +246,14 @@ class Trainer:
             dtype="auto",
             device_map=device,
         )
-        
+
         # Freeze frozen model
         for param in self.model_frozen.parameters():
             param.requires_grad = False
-        
-        
+
+
         num_layers = self.model_active.model.config.num_hidden_layers
-        
+
         # Setup layer dropping
         drop_config = LayerDropConfig(
             initial_layers_to_drop=1,
@@ -256,14 +265,14 @@ class Trainer:
             num_layers,
             drop_config,
         )
-        
+
         # Loss and optimizer
         self.criterion = LayerWiseComparisonLoss(use_only_last_layer=use_only_last_layer)
         self.optimizer = torch.optim.AdamW(
             self.model_active.parameters(),
             lr=learning_rate,
         )
-        
+
         # Learning rate scheduler
         if self.use_scheduler:
             self.scheduler = CosineAnnealingLR(
@@ -273,10 +282,10 @@ class Trainer:
             )
         else:
             self.scheduler = None
-        
+
         # Tracking best checkpoints
         self.best_checkpoints = []  # List of (loss, checkpoint_path)
-        
+
         # Initialize wandb
         wandb.init(
             project="attention_skipping",
@@ -290,7 +299,7 @@ class Trainer:
                 "use_scheduler": use_scheduler,
             },
         )
-    
+
     def train(self):
         """Main training loop."""
         logger.info(f"Starting training for {self.num_training_steps} steps")
@@ -305,30 +314,31 @@ class Trainer:
             batch_size=self.batch_size,
             collate_fn=collate_fn,
         )
-        
+
         # Create iterator
         data_iter = iter(dataloader)
-        
+
         self.model_active.train()
-        
+
         accumulated_loss = 0.0
-        
+        scaled_loss = float('inf')
+
         for step in range(self.num_training_steps):
             # Update layer dropping strategy
-            self.dropped_layer_model.patch_dropped_layers(step)
+            self.dropped_layer_model.patch_dropped_layers(scaled_loss, step)
             dropped_layers = self.dropped_layer_model.get_dropped_layers()
-            
+
             # Get next batch
             try:
                 batch = next(data_iter)
             except StopIteration:
                 data_iter = iter(dataloader)
                 batch = next(data_iter)
-            
+
             # Move to device
             input_ids = batch["input_ids"].to(self.device)
             attention_mask = batch["attention_mask"].to(self.device)
-            
+
             # Forward pass through both models
             with torch.no_grad():
                 frozen_outputs = self.model_frozen(
@@ -337,37 +347,37 @@ class Trainer:
                     output_hidden_states=True,
                 )
                 frozen_hidden_states = frozen_outputs.hidden_states
-            
+
             active_outputs = self.model_active(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 output_hidden_states=True,
             )
             active_hidden_states = active_outputs.hidden_states
-            
+
             # Compute loss
             loss, layer2loss = self.criterion(
                 active_hidden_states,
                 frozen_hidden_states,
                 dropped_layers,
             )
-            
+
             # Scale loss for gradient accumulation
             scaled_loss = loss / self.gradient_accumulation_steps
-            
+
             # Backward pass
             scaled_loss.backward()
             accumulated_loss += loss.item()
             for k, v in layer2loss.items():
                 accumulated_layer2loss[k] += v.item()
-            
+
             # Update weights only after accumulation steps
             if (step + 1) % self.gradient_accumulation_steps == 0:
                 self.optimizer.step()
                 if self.scheduler is not None:
                     self.scheduler.step()
                 self.optimizer.zero_grad()
-            
+
             # Logging
             if (step + 1) % self.log_interval == 0:
                 num_dropped = self.dropped_layer_model.get_current_drop_count()
@@ -378,33 +388,33 @@ class Trainer:
                     f"Loss: {avg_loss:.4f} | "
                     f"LR: {current_lr:.6f} | "
                     f"Dropped Layers: {num_dropped} | "
-                    f"Layer Losses: {layer2loss}"
+                    f"Layer Losses: {accumulated_layer2loss}"
                 )
-                
+
                 wandb.log({
                     "loss": avg_loss,
                     "learning_rate": current_lr,
                     "num_dropped_layers": num_dropped,
                     "step": step + 1,
-                    **{f"layer_{k}_loss": v for k, v in layer2loss.items()},
+                    **{f"layer_{k}_loss": v for k, v in accumulated_layer2loss.items()},
                 })
-                
+
                 accumulated_layer2loss = defaultdict(float)
 
-                
+
                 # Save checkpoint if in top-2 best
                 self._save_best_checkpoint(step, avg_loss)
-                
+
                 accumulated_loss = 0.0
-        
+
         logger.info("Training completed!")
         return self.best_checkpoints
-    
+
     def _save_best_checkpoint(self, step: int, loss: float):
         """Save checkpoint if it's in top-2 best."""
         timestamp = datetime.now().isoformat()
         checkpoint_path = self.checkpoint_dir / f"checkpoint_step_{step}_{timestamp}.pt"
-        
+
         # Save checkpoint
         torch.save({
             "step": step,
@@ -413,18 +423,18 @@ class Trainer:
             "optimizer_state": self.optimizer.state_dict(),
             "num_dropped_layers": self.dropped_layer_model.get_current_drop_count(),
         }, checkpoint_path)
-        
+
         # Update best checkpoints list
         self.best_checkpoints.append((loss, str(checkpoint_path)))
         self.best_checkpoints = sorted(self.best_checkpoints, key=lambda x: x[0])[:self.num_best_checkpoints]
-        
+
         # Clean up old checkpoints not in top-2
         all_checkpoints = list(self.checkpoint_dir.glob("checkpoint_step_*.pt"))
         best_paths = {Path(path) for _, path in self.best_checkpoints}
         for checkpoint in all_checkpoints:
             if checkpoint not in best_paths:
                 checkpoint.unlink()
-        
+
         logger.info(f"Saved checkpoint: {checkpoint_path}")
         logger.info(f"Best checkpoints: {self.best_checkpoints}")
 
@@ -493,9 +503,9 @@ def main():
         default=False,
         help="Use only the last layer for loss calculation",
     )
-    
+
     args = parser.parse_args([])
-    
+
     trainer = Trainer(
         model_name=args.model_name,
         device=args.device,
@@ -507,14 +517,13 @@ def main():
         use_scheduler=args.use_scheduler,
         use_only_last_layer=args.use_only_last_layer,
     )
-    
+
     best_checkpoints = trainer.train()
-    
+
     logger.info("Training finished!")
     logger.info(f"Top 2 best checkpoints: {best_checkpoints}")
-    
-    wandb.finish()
 
+    wandb.finish()
 
 if __name__ == "__main__":
     main()
