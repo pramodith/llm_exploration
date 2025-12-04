@@ -3,15 +3,17 @@ Training script for attention skipping experiments with gradual layer dropping.
 """
 import torch
 import torch.nn as nn
+from collections import defaultdict
 from torch.utils.data import DataLoader
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Dict
+from typing import Optional
 import logging
 import argparse
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset
+from torch.optim.lr_scheduler import CosineAnnealingLR
 import wandb
 
 logging.basicConfig(level=logging.INFO)
@@ -83,16 +85,17 @@ class DroppedLayerModel(nn.Module):
 class LayerWiseComparisonLoss(nn.Module):
     """MSE loss between corresponding layers of two models."""
     
-    def __init__(self):
+    def __init__(self, use_only_last_layer: bool = False):
         super().__init__()
         self.mse_loss = nn.MSELoss()
+        self.use_only_last_layer = use_only_last_layer
     
     def forward(
         self,
         model_active_outputs: list[torch.Tensor],
         model_frozen_outputs: list[torch.Tensor],
         dropped_layer_indices: set,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, dict]:
         """
         Compute MSE loss between layers after dropped layers.
         
@@ -103,63 +106,37 @@ class LayerWiseComparisonLoss(nn.Module):
         """
         total_loss = 0.0
         loss_count = 0
-        
-        # Compare layers after the dropped layers
-        for dropped_layer_index in dropped_layer_indices:
-            active_hidden = model_active_outputs[dropped_layer_index+1]
-            frozen_hidden = model_frozen_outputs[dropped_layer_index+1]
+        layer2loss = {}
+
+        if not self.use_only_last_layer:
+            # Compare layers after the dropped layers
+            for i in range(1, len(model_active_outputs)):
+                if i not in dropped_layer_indices:
+                    active_hidden = model_active_outputs[i]
+                    frozen_hidden = model_frozen_outputs[i]
+                    
+                    # Ensure shapes match
+                    if active_hidden.shape != frozen_hidden.shape:
+                        frozen_hidden = frozen_hidden[:, -active_hidden.shape[1]:, :]
+                    
+                    loss = self.mse_loss(active_hidden, frozen_hidden.detach())
+                    total_loss += loss
+                    layer2loss[i] = loss.detach()
+                    loss_count += 1
+        else:
+            # Only compare the last layer
+            active_hidden = model_active_outputs[-1]
+            frozen_hidden = model_frozen_outputs[-1]
             
-            # Ensure shapes match
             if active_hidden.shape != frozen_hidden.shape:
                 frozen_hidden = frozen_hidden[:, -active_hidden.shape[1]:, :]
             
             loss = self.mse_loss(active_hidden, frozen_hidden.detach())
             total_loss += loss
+            layer2loss[len(model_active_outputs) - 1] = loss.detach()
             loss_count += 1
-        
-        return total_loss / max(loss_count, 1)
-
-
-class HiddenStateCapture(nn.Module):
-    """Hook to capture hidden states from model layers."""
-    
-    def __init__(self, model, num_layers: int):
-        super().__init__()
-        self.model = model
-        self.hidden_states = {}
-        self.num_layers = num_layers
-        self.hooks = []
-        self._register_hooks()
-    
-    def _register_hooks(self):
-        """Register forward hooks to capture hidden states."""
-        layers = self.model.model.layers
-        for idx, layer in enumerate(layers):
-            hook = layer.register_forward_hook(self._create_hook(idx))
-            self.hooks.append(hook)
-    
-    def _create_hook(self, layer_idx: int):
-        """Create a hook function for a specific layer."""
-        def hook(module, input, output):
-            if isinstance(output, tuple):
-                self.hidden_states[layer_idx] = output[0].detach()
-            else:
-                self.hidden_states[layer_idx] = output.detach()
-        return hook
-    
-    def forward(self, *args, **kwargs):
-        """Forward pass with hidden state capture."""
-        self.hidden_states = {}
-        return self.model(*args, **kwargs)
-    
-    def get_hidden_states(self) -> Dict[int, torch.Tensor]:
-        """Get captured hidden states."""
-        return self.hidden_states
-    
-    def remove_hooks(self):
-        """Remove all registered hooks."""
-        for hook in self.hooks:
-            hook.remove()
+            
+        return total_loss / max(loss_count, 1), layer2loss
 
 
 def get_dataset(
@@ -226,12 +203,14 @@ class Trainer:
             "mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu"
         ),
         num_training_steps: int = 10000,
-        batch_size: int = 8,
+        batch_size: int = 4,
         learning_rate: float = 1e-4,
         checkpoint_dir: str = "./checkpoints",
         num_best_checkpoints: int = 2,
-        log_interval: int = 10,
+        log_interval: int = 2,
         gradient_accumulation_steps: int = 2,
+        use_scheduler: bool = True,
+        use_only_last_layer: bool = False,
     ):
         self.device = device
         self.num_training_steps = num_training_steps
@@ -241,6 +220,7 @@ class Trainer:
         self.num_best_checkpoints = num_best_checkpoints
         self.log_interval = log_interval
         self.gradient_accumulation_steps = gradient_accumulation_steps
+        self.use_scheduler = use_scheduler
         
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         
@@ -278,11 +258,21 @@ class Trainer:
         )
         
         # Loss and optimizer
-        self.criterion = LayerWiseComparisonLoss()
+        self.criterion = LayerWiseComparisonLoss(use_only_last_layer=use_only_last_layer)
         self.optimizer = torch.optim.AdamW(
             self.model_active.parameters(),
             lr=learning_rate,
         )
+        
+        # Learning rate scheduler
+        if self.use_scheduler:
+            self.scheduler = CosineAnnealingLR(
+                self.optimizer,
+                T_max=num_training_steps,
+                eta_min=1e-6,
+            )
+        else:
+            self.scheduler = None
         
         # Tracking best checkpoints
         self.best_checkpoints = []  # List of (loss, checkpoint_path)
@@ -297,13 +287,14 @@ class Trainer:
                 "num_training_steps": num_training_steps,
                 "num_layers": num_layers,
                 "gradient_accumulation_steps": gradient_accumulation_steps,
+                "use_scheduler": use_scheduler,
             },
         )
     
     def train(self):
         """Main training loop."""
         logger.info(f"Starting training for {self.num_training_steps} steps")
-        
+        accumulated_layer2loss = defaultdict(float)
         # Load dataset
         dataset = get_dataset(
             tokenizer=self.tokenizer,
@@ -355,7 +346,7 @@ class Trainer:
             active_hidden_states = active_outputs.hidden_states
             
             # Compute loss
-            loss = self.criterion(
+            loss, layer2loss = self.criterion(
                 active_hidden_states,
                 frozen_hidden_states,
                 dropped_layers,
@@ -367,27 +358,39 @@ class Trainer:
             # Backward pass
             scaled_loss.backward()
             accumulated_loss += loss.item()
+            for k, v in layer2loss.items():
+                accumulated_layer2loss[k] += v.item()
             
             # Update weights only after accumulation steps
             if (step + 1) % self.gradient_accumulation_steps == 0:
                 self.optimizer.step()
+                if self.scheduler is not None:
+                    self.scheduler.step()
                 self.optimizer.zero_grad()
             
             # Logging
             if (step + 1) % self.log_interval == 0:
                 num_dropped = self.dropped_layer_model.get_current_drop_count()
                 avg_loss = accumulated_loss / self.log_interval
+                current_lr = self.optimizer.param_groups[0]["lr"]
                 logger.info(
                     f"Step {step + 1}/{self.num_training_steps} | "
                     f"Loss: {avg_loss:.4f} | "
-                    f"Dropped Layers: {num_dropped}"
+                    f"LR: {current_lr:.6f} | "
+                    f"Dropped Layers: {num_dropped} | "
+                    f"Layer Losses: {layer2loss}"
                 )
                 
                 wandb.log({
                     "loss": avg_loss,
+                    "learning_rate": current_lr,
                     "num_dropped_layers": num_dropped,
                     "step": step + 1,
+                    **{f"layer_{k}_loss": v for k, v in layer2loss.items()},
                 })
+                
+                accumulated_layer2loss = defaultdict(float)
+
                 
                 # Save checkpoint if in top-2 best
                 self._save_best_checkpoint(step, avg_loss)
@@ -444,7 +447,7 @@ def main():
     parser.add_argument(
         "--batch_size",
         type=int,
-        default=8,
+        default=4,
         help="Batch size",
     )
     parser.add_argument(
@@ -469,11 +472,29 @@ def main():
     parser.add_argument(
         "--gradient_accumulation_steps",
         type=int,
-        default=1,
+        default=2,
         help="Number of steps to accumulate gradients before updating weights",
     )
+    parser.add_argument(
+        "--use_scheduler",
+        action="store_true",
+        default=True,
+        help="Use cosine annealing learning rate scheduler",
+    )
+    parser.add_argument(
+        "--no_scheduler",
+        action="store_false",
+        dest="use_scheduler",
+        help="Disable learning rate scheduler",
+    )
+    parser.add_argument(
+        "--use_only_last_layer",
+        action="store_true",
+        default=False,
+        help="Use only the last layer for loss calculation",
+    )
     
-    args = parser.parse_args()
+    args = parser.parse_args([])
     
     trainer = Trainer(
         model_name=args.model_name,
@@ -483,6 +504,8 @@ def main():
         learning_rate=args.learning_rate,
         checkpoint_dir=args.checkpoint_dir,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
+        use_scheduler=args.use_scheduler,
+        use_only_last_layer=args.use_only_last_layer,
     )
     
     best_checkpoints = trainer.train()
