@@ -1,13 +1,16 @@
 import torch
 import torch.nn as nn
 from collections import defaultdict
+from torch.amp.autocast_mode import autocast
+from torch.amp.grad_scaler import GradScaler
 from torch.utils.data import DataLoader
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
+from contextlib import nullcontext
 import logging
 import argparse
-import sys # Added import for sys
+import sys
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset
@@ -219,6 +222,7 @@ class Trainer:
         log_interval: int = 2,
         gradient_accumulation_steps: int = 2,
         use_scheduler: bool = True,
+        use_amp: bool = True,
         use_only_last_layer: bool = False,
     ):
         self.device = device
@@ -230,6 +234,7 @@ class Trainer:
         self.log_interval = log_interval
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.use_scheduler = use_scheduler
+        self.use_amp = use_amp
 
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -297,6 +302,7 @@ class Trainer:
                 "num_layers": num_layers,
                 "gradient_accumulation_steps": gradient_accumulation_steps,
                 "use_scheduler": use_scheduler,
+                "use_amp": use_amp,
             },
         )
 
@@ -320,8 +326,12 @@ class Trainer:
 
         self.model_active.train()
 
-        accumulated_loss = 0.0
+        # Ensure gradients are zeroed before starting accumulation
+        self.optimizer.zero_grad()
+
+        accumulated_loss, accumulated_frozen_ce_loss, accumulated_active_ce_loss = 0.0, 0.0, 0.0
         scaled_loss = float('inf')
+        scaler = GradScaler() if self.use_amp and self.device == "cuda" else None
 
         for step in range(self.num_training_steps):
             # Update layer dropping strategy
@@ -339,21 +349,27 @@ class Trainer:
             input_ids = batch["input_ids"].to(self.device)
             attention_mask = batch["attention_mask"].to(self.device)
 
-            # Forward pass through both models
+            # Forward pass through both models (with optional autocast)
+            autocast_cm = autocast(self.device, dtype=torch.bfloat16) if self.use_amp else nullcontext()
+
             with torch.no_grad():
-                frozen_outputs = self.model_frozen(
+                with autocast_cm:
+                    frozen_outputs = self.model_frozen(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        output_hidden_states=True,
+                    )
+                    frozen_hidden_states = frozen_outputs.hidden_states
+                    frozen_logits = frozen_outputs.logits[:, :-1]
+
+            with autocast_cm:
+                active_outputs = self.model_active(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
                     output_hidden_states=True,
                 )
-                frozen_hidden_states = frozen_outputs.hidden_states
-
-            active_outputs = self.model_active(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                output_hidden_states=True,
-            )
-            active_hidden_states = active_outputs.hidden_states
+                active_hidden_states = active_outputs.hidden_states
+                active_logits = active_outputs.logits[:, :-1]
 
             # Compute loss
             loss, layer2loss = self.criterion(
@@ -361,31 +377,62 @@ class Trainer:
                 frozen_hidden_states,
                 dropped_layers,
             )
+            
+            with torch.no_grad():
+                frozen_ce_loss = nn.functional.cross_entropy(
+                    frozen_logits.view(-1, frozen_logits.size(-1)),
+                    input_ids[:, 1:].view(-1),
+                    ignore_index=self.tokenizer.pad_token_id,
+                )
+
+                active_ce_loss = nn.functional.cross_entropy(
+                    active_logits.view(-1, active_logits.size(-1)),
+                    input_ids[:, 1:].view(-1),
+                    ignore_index=self.tokenizer.pad_token_id,
+                )
 
             # Scale loss for gradient accumulation
             scaled_loss = loss / self.gradient_accumulation_steps
+            scaled_frozen_ce_loss = frozen_ce_loss / self.gradient_accumulation_steps
+            scaled_active_ce_loss = active_ce_loss / self.gradient_accumulation_steps
 
-            # Backward pass
-            scaled_loss.backward()
+            # Backward pass (use GradScaler if available)
+            if scaler is not None:
+                scaler.scale(scaled_loss).backward()
+            else:
+                scaled_loss.backward()
+
             accumulated_loss += loss.item()
+            accumulated_frozen_ce_loss += scaled_frozen_ce_loss.item()
+            accumulated_active_ce_loss += scaled_active_ce_loss.item()
             for k, v in layer2loss.items():
                 accumulated_layer2loss[k] += v.item()
 
             # Update weights only after accumulation steps
             if (step + 1) % self.gradient_accumulation_steps == 0:
-                self.optimizer.step()
+                if scaler is not None:
+                    scaler.step(self.optimizer)
+                    scaler.update()
+                else:
+                    self.optimizer.step()
+
                 if self.scheduler is not None:
                     self.scheduler.step()
-                self.optimizer.zero_grad()
 
+                self.optimizer.zero_grad()
+            
             # Logging
             if (step + 1) % self.log_interval == 0:
                 num_dropped = self.dropped_layer_model.get_current_drop_count()
                 avg_loss = accumulated_loss / self.log_interval
+                avg_active_ce_loss = accumulated_active_ce_loss / self.log_interval
+                avg_frozen_ce_loss = accumulated_frozen_ce_loss / self.log_interval
                 current_lr = self.optimizer.param_groups[0]["lr"]
                 logger.info(
                     f"Step {step + 1}/{self.num_training_steps} | "
                     f"Loss: {avg_loss:.4f} | "
+                    f"Active CE Loss {avg_active_ce_loss:.4f} |"
+                    f"Frozen CE Loss {avg_frozen_ce_loss:4f} | "
                     f"LR: {current_lr:.6f} | "
                     f"Dropped Layers: {num_dropped} | "
                     f"Layer Losses: {accumulated_layer2loss}"
@@ -393,6 +440,8 @@ class Trainer:
 
                 wandb.log({
                     "loss": avg_loss,
+                    "active_ce_loss": avg_active_ce_loss,
+                    "frozen_ce_loss": avg_frozen_ce_loss,
                     "learning_rate": current_lr,
                     "num_dropped_layers": num_dropped,
                     "step": step + 1,
@@ -406,6 +455,8 @@ class Trainer:
                 self._save_best_checkpoint(step, avg_loss)
 
                 accumulated_loss = 0.0
+                accumulated_frozen_ce_loss = 0.0
+                accumulated_active_ce_loss = 0.0
 
         logger.info("Training completed!")
         return self.best_checkpoints
@@ -498,6 +549,18 @@ def main():
         help="Disable learning rate scheduler",
     )
     parser.add_argument(
+        "--use_amp",
+        action="store_true",
+        default=True,
+        help="Enable mixed-precision (AMP) training when available (CUDA)",
+    )
+    parser.add_argument(
+        "--no_amp",
+        action="store_false",
+        dest="use_amp",
+        help="Disable mixed-precision training",
+    )
+    parser.add_argument(
         "--use_only_last_layer",
         action="store_true",
         default=False,
@@ -515,6 +578,7 @@ def main():
         checkpoint_dir=args.checkpoint_dir,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         use_scheduler=args.use_scheduler,
+        use_amp=args.use_amp,
         use_only_last_layer=args.use_only_last_layer,
     )
 
