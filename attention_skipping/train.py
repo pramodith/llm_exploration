@@ -380,14 +380,14 @@ class Trainer:
             
             with torch.no_grad():
                 frozen_ce_loss = nn.functional.cross_entropy(
-                    frozen_logits.view(-1, frozen_logits.size(-1)),
-                    input_ids[:, 1:].view(-1),
+                    frozen_logits.reshape(-1, frozen_logits.size(-1)),
+                    input_ids[:, 1:].reshape(-1),
                     ignore_index=self.tokenizer.pad_token_id,
                 )
 
                 active_ce_loss = nn.functional.cross_entropy(
-                    active_logits.view(-1, active_logits.size(-1)),
-                    input_ids[:, 1:].view(-1),
+                    active_logits.reshape(-1, active_logits.size(-1)),
+                    input_ids[:, 1:].reshape(-1),
                     ignore_index=self.tokenizer.pad_token_id,
                 )
 
