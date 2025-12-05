@@ -309,7 +309,7 @@ class Trainer:
     def train(self):
         """Main training loop."""
         logger.info(f"Starting training for {self.num_training_steps} steps")
-        accumulated_layer2loss = defaultdict(float)
+        accumulated_layer2loss = defaultdict(lambda: torch.tensor(0))
         # Load dataset
         dataset = get_dataset(
             tokenizer=self.tokenizer,
@@ -329,7 +329,7 @@ class Trainer:
         # Ensure gradients are zeroed before starting accumulation
         self.optimizer.zero_grad()
 
-        accumulated_loss, accumulated_frozen_ce_loss, accumulated_active_ce_loss = 0.0, 0.0, 0.0
+        accumulated_loss, accumulated_frozen_ce_loss, accumulated_active_ce_loss = torch.tensor(0.0), torch.tensor(0.0), torch.tensor(0.0)
         scaled_loss = float('inf')
         scaler = GradScaler() if self.use_amp and self.device == "cuda" else None
 
@@ -402,11 +402,11 @@ class Trainer:
             else:
                 scaled_loss.backward()
 
-            accumulated_loss += loss.item()
-            accumulated_frozen_ce_loss += scaled_frozen_ce_loss.item()
-            accumulated_active_ce_loss += scaled_active_ce_loss.item()
+            accumulated_loss += loss
+            accumulated_frozen_ce_loss += frozen_ce_loss
+            accumulated_active_ce_loss += active_ce_loss
             for k, v in layer2loss.items():
-                accumulated_layer2loss[k] += v.item()
+                accumulated_layer2loss[k] += v
 
             # Update weights only after accumulation steps
             if (step + 1) % self.gradient_accumulation_steps == 0:
@@ -424,9 +424,9 @@ class Trainer:
             # Logging
             if (step + 1) % self.log_interval == 0:
                 num_dropped = self.dropped_layer_model.get_current_drop_count()
-                avg_loss = accumulated_loss / self.log_interval
-                avg_active_ce_loss = accumulated_active_ce_loss / self.log_interval
-                avg_frozen_ce_loss = accumulated_frozen_ce_loss / self.log_interval
+                avg_loss = accumulated_loss.item() / self.log_interval
+                avg_active_ce_loss = accumulated_active_ce_loss.item() / self.log_interval
+                avg_frozen_ce_loss = accumulated_frozen_ce_loss.item() / self.log_interval
                 current_lr = self.optimizer.param_groups[0]["lr"]
                 logger.info(
                     f"Step {step + 1}/{self.num_training_steps} | "
@@ -435,7 +435,7 @@ class Trainer:
                     f"Frozen CE Loss {avg_frozen_ce_loss:4f} | "
                     f"LR: {current_lr:.6f} | "
                     f"Dropped Layers: {num_dropped} | "
-                    f"Layer Losses: {accumulated_layer2loss}"
+                    f"Layer Losses: { {k: v.item() for k, v in accumulated_layer2loss.items()} }"
                 )
 
                 wandb.log({
