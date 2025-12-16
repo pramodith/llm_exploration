@@ -20,7 +20,7 @@ from transformers import (
 )
 from trl import SFTConfig, SFTTrainer
 from utils.logging_utils import setup_logging
-from utils.data_utils import load_and_preprocess_dataset
+from datasets import load_dataset
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -114,21 +114,23 @@ def train_model(
 
 def main():
     parser = argparse.ArgumentParser(description="Train models with comparison")
-    parser.add_argument("--model_dir", type=str, required=True,
+    parser.add_argument("--model_dir", type=str, default="transformer_from_scratch/distilling_init/models",
                        help="Directory containing initialized models")
-    parser.add_argument("--config_path", type=str, required=True,
+    parser.add_argument("--config_path", type=str, default="transformer_from_scratch/distilling_init/config/default_config.yaml",
                        help="Path to training config YAML file")
-    parser.add_argument("--dataset", type=str, default="wikitext-2",
+    parser.add_argument("--dataset", type=str, default="trl-lib/Capybara",
                        help="Dataset name")
-    parser.add_argument("--output_dir", type=str, required=True,
+    parser.add_argument("--output_dir", type=str, default="results/",
                        help="Output directory for training results")
-    parser.add_argument("--hub_repo_gaussian", type=str, default=None,
+    parser.add_argument("--hub_repo_gaussian", type=str, default="model_init",
                        help="Hugging Face Hub repo ID for Gaussian initialized model")
-    parser.add_argument("--hub_repo_default", type=str, default=None,
+    parser.add_argument("--hub_repo_default", type=str, default="model_init",
                        help="Hugging Face Hub repo ID for default initialized model")
     parser.add_argument("--log_level", type=str, default="INFO",
                        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                        help="Logging level")
+    parser.add_argument("--tokenizer_name", type=str, default="HuggingFaceTB/SmolLM2-1.7B-Instruct",
+                       help="Tokenizer name or path")
 
     args = parser.parse_args()
 
@@ -140,7 +142,6 @@ def main():
         config = yaml.safe_load(f)
 
     training_config = config["training"]
-    model_config = config["target_model_config"]
 
     # Create output directory
     output_dir = Path(args.output_dir)
@@ -148,11 +149,7 @@ def main():
 
     # Load dataset
     logger.info(f"Loading dataset {args.dataset}")
-    dataset, tokenizer_name = load_and_preprocess_dataset(
-        args.dataset,
-        config["model_name"],  # Use source model tokenizer
-        training_config["context_length"]
-    )
+    dataset = load_dataset("trl-lib/Capybara")
 
     # Split dataset
     train_dataset = dataset["train"]
@@ -162,21 +159,20 @@ def main():
     model_dir = Path(args.model_dir)
     config_path = model_dir / "target_config.yaml"
 
-    model_a = load_model_from_checkpoint(
-        config_path, model_dir / "model_gaussian_init.pt"
-    )
-    model_b = load_model_from_checkpoint(
-        config_path, model_dir / "model_default_init.pt"
-    )
+    model_a = AutoModelForCausalLM.from_pretrained(model_dir / "model_gaussian_init.pt")
 
     # Train both models
     trainer_a = train_model(
-        model_a, train_dataset, eval_dataset, tokenizer_name,
+        model_a, train_dataset, eval_dataset, args.tokenizer_name,
         output_dir, training_config, "gaussian_init", args.hub_repo_gaussian
     )
+    
+    del model_a  # Free up memory
+    torch.cuda.empty_cache()
+    model_b = AutoModelForCausalLM.from_pretrained(model_dir / "model_default_init.pt")
 
     trainer_b = train_model(
-        model_b, train_dataset, eval_dataset, tokenizer_name,
+        model_b, train_dataset, eval_dataset, args.tokenizer_name,
         output_dir, training_config, "default_init", args.hub_repo_default
     )
 

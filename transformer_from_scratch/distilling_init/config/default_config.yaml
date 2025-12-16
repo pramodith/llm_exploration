@@ -51,13 +51,13 @@ target_model_config:
 training:
   learning_rate: 3e-4
   warmup_steps: 1000
-  max_steps: 20000
+  max_steps: 100
   batch_size: 8
   gradient_accumulation_steps: 2
   context_length: 512
-  eval_steps: 500
-  save_steps: 1000
-  logging_steps: 50
+  eval_steps: 10
+  save_steps: 50
+  logging_steps: 10
   seed: 42
 
 dataset: "wikitext-2"
