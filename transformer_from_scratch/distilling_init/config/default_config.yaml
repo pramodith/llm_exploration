@@ -1,0 +1,27 @@
+model_name: "Qwen/Qwen2.5-1.5B"
+target_model_config:
+  num_hidden_layers: 12  # Half of typical 24
+  hidden_size: 1024      # Half of typical 2048
+  num_attention_heads: 16 # Half of typical 32
+  num_key_value_heads: 16
+  intermediate_size: 4096 # 4x hidden_size
+  vocab_size: 151936     # Match source
+  max_position_embeddings: 32768
+  rope_theta: 10000.0
+  attention_dropout: 0.0
+  hidden_dropout: 0.0
+
+training:
+  learning_rate: 3e-4
+  warmup_steps: 1000
+  max_steps: 20000
+  batch_size: 8
+  gradient_accumulation_steps: 2
+  context_length: 512
+  eval_steps: 500
+  save_steps: 1000
+  logging_steps: 50
+  seed: 42
+
+dataset: "wikitext-2"
+temperature: 1.0
