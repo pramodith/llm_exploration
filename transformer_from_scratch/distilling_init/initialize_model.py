@@ -31,11 +31,12 @@ def create_and_initialize_models(
     target_config: Dict[str, Any],
     stats_dict: Dict[str, Dict],
     temperature: float = 1.0,
-    device: str = "cpu"
+    device: str = "cpu",
+    parent_model_name: str = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
 ):
     """Create and initialize two model variants."""
     # Create config from dict
-    config = AutoConfig.from_dict(target_config)
+    config = AutoConfig.from_pretrained(parent_model_name, **target_config)
 
     # Model A: Initialized with transferred statistics
     logger.info("Creating model with transferred statistics initialization")
@@ -56,11 +57,11 @@ def save_model(model, path: Path):
 
 def main():
     parser = argparse.ArgumentParser(description="Initialize target model with transferred statistics")
-    parser.add_argument("--stats_path", type=str, required=True,
+    parser.add_argument("--stats_path", type=str, default="transformer_from_scratch/distilling_init/artifacts/model_stats.json",
                        help="Path to statistics JSON file")
-    parser.add_argument("--target_config", type=str, required=True,
+    parser.add_argument("--target_config", type=str, default="transformer_from_scratch/distilling_init/config/default_config.yaml",
                        help="Path to target model config YAML file")
-    parser.add_argument("--output_dir", type=str, required=True,
+    parser.add_argument("--output_dir", type=str, default="transformer_from_scratch/distilling_init/models",
                        help="Output directory for initialized models")
     parser.add_argument("--temperature", type=float, default=1.0,
                        help="Temperature for initialization variance scaling")
@@ -100,6 +101,10 @@ def main():
     model_a, model_b = create_and_initialize_models(
         model_config, stats_dict, args.temperature, args.device
     )
+
+    # Log parameter counts
+    logger.info(f"Model A (Gaussian init) has {model_a.num_parameters()/10**6} million parameters")
+    logger.info(f"Model B (Default init) has {model_b.num_parameters()/10**6} million parameters")
 
     # Save models
     save_model(model_a, output_dir / "model_gaussian_init.pt")

@@ -12,17 +12,18 @@ from pathlib import Path
 from typing import Dict, Any
 import logging
 import yaml
-import json
 
 from transformers import (
     AutoModelForCausalLM,
     AutoConfig,
-    TrainingArguments,
     AutoTokenizer
 )
-from trl import SFTTrainer
+from trl import SFTConfig, SFTTrainer
 from utils.logging_utils import setup_logging
 from utils.data_utils import load_and_preprocess_dataset
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -57,10 +58,11 @@ def train_model(
     tokenizer_name,
     output_dir: Path,
     training_config: Dict[str, Any],
-    model_name: str
+    model_name: str,
+    hub_repo: str = None
 ):
     """Train a single model using SFTTrainer."""
-    training_args = TrainingArguments(
+    training_args = SFTConfig(
         output_dir=str(output_dir / model_name),
         num_train_epochs=1,  # We'll use max_steps
         max_steps=training_config["max_steps"],
@@ -79,7 +81,7 @@ def train_model(
         greater_is_better=False,
         dataloader_num_workers=0,  # Avoid multiprocessing issues
         seed=training_config["seed"],
-        report_to=[],  # Disable wandb for now
+        report_to="trackio",  # Disable wandb for now
         packing=True,  # Enable packing for efficient training
     )
 
@@ -94,7 +96,6 @@ def train_model(
         eval_dataset=eval_dataset,
         tokenizer=tokenizer,
         max_seq_length=training_config["context_length"],
-        packing=True,
     )
 
     logger.info(f"Starting training for {model_name}")
@@ -102,6 +103,12 @@ def train_model(
 
     # Save final model
     trainer.save_model(str(output_dir / model_name / "final"))
+
+    # Push to Hugging Face Hub if repo specified
+    if hub_repo:
+        logger.info(f"Pushing {model_name} to Hugging Face Hub: {hub_repo}")
+        trainer.model.push_to_hub(hub_repo, private=True)
+        trainer.tokenizer.push_to_hub(hub_repo, private=True)
 
     return trainer
 
@@ -115,6 +122,10 @@ def main():
                        help="Dataset name")
     parser.add_argument("--output_dir", type=str, required=True,
                        help="Output directory for training results")
+    parser.add_argument("--hub_repo_gaussian", type=str, default=None,
+                       help="Hugging Face Hub repo ID for Gaussian initialized model")
+    parser.add_argument("--hub_repo_default", type=str, default=None,
+                       help="Hugging Face Hub repo ID for default initialized model")
     parser.add_argument("--log_level", type=str, default="INFO",
                        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                        help="Logging level")
@@ -161,25 +172,13 @@ def main():
     # Train both models
     trainer_a = train_model(
         model_a, train_dataset, eval_dataset, tokenizer_name,
-        output_dir, training_config, "gaussian_init"
+        output_dir, training_config, "gaussian_init", args.hub_repo_gaussian
     )
 
     trainer_b = train_model(
         model_b, train_dataset, eval_dataset, tokenizer_name,
-        output_dir, training_config, "default_init"
+        output_dir, training_config, "default_init", args.hub_repo_default
     )
-
-    # Save training logs
-    logs_a = trainer_a.state.log_history
-    logs_b = trainer_b.state.log_history
-
-    with open(output_dir / "training_logs_gaussian.json", 'w') as f:
-        json.dump(logs_a, f, indent=2)
-
-    with open(output_dir / "training_logs_default.json", 'w') as f:
-        json.dump(logs_b, f, indent=2)
-
-    logger.info("Training complete")
 
 if __name__ == "__main__":
     main()
