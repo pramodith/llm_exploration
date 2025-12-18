@@ -65,9 +65,9 @@ def save_stats(stats: Dict[str, Dict], metadata: Dict[str, Any], output_path: Pa
 
 def main():
     parser = argparse.ArgumentParser(description="Extract parameter statistics from pre-trained model")
-    parser.add_argument("--model_name", type=str, required=True,
-                       help="HuggingFace model name (e.g., 'Qwen/Qwen2.5-1.5B')")
-    parser.add_argument("--output_path", type=str, required=True,
+    parser.add_argument("--model_name", type=str, default="HuggingFaceTB/SmolLM2-1.7B",
+                       help="HuggingFace model name (e.g., '')")
+    parser.add_argument("--output_path", type=str, default="./transformer_from_scratch/distilling_init/param_stats/stats.json",
                        help="Output path for statistics JSON file")
     parser.add_argument("--torch_dtype", type=str, default="float32",
                        choices=["float16", "float32", "float64"],

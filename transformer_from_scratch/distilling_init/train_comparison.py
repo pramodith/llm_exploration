@@ -11,6 +11,7 @@ import torch
 from pathlib import Path
 from typing import Dict, Any
 import logging
+import os
 import yaml
 
 from transformers import (
@@ -74,15 +75,16 @@ def train_model(
         logging_steps=training_config["logging_steps"],
         save_steps=training_config["save_steps"],
         eval_steps=training_config["eval_steps"],
-        evaluation_strategy="steps",
+        eval_strategy="steps",
         save_strategy="steps",
-        load_best_model_at_end=False,
+        load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
         greater_is_better=False,
         dataloader_num_workers=0,  # Avoid multiprocessing issues
         seed=training_config["seed"],
         report_to="trackio",  # Disable wandb for now
         packing=True,  # Enable packing for efficient training
+        max_length=training_config.get("context_length", 512)
     )
 
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
@@ -94,37 +96,36 @@ def train_model(
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        tokenizer=tokenizer,
-        max_seq_length=training_config["context_length"],
+        processing_class=tokenizer
     )
 
     logger.info(f"Starting training for {model_name}")
-    trainer.train()
+    # trainer.train()
 
     # Save final model
-    trainer.save_model(str(output_dir / model_name / "final"))
+    # trainer.save_model(str(output_dir / model_name / "final"))
 
     # Push to Hugging Face Hub if repo specified
     if hub_repo:
         logger.info(f"Pushing {model_name} to Hugging Face Hub: {hub_repo}")
-        trainer.model.push_to_hub(hub_repo, private=True)
-        trainer.tokenizer.push_to_hub(hub_repo, private=True)
+        trainer.model.push_to_hub(hub_repo, private=True, token=os.getenv("HF_TOKEN"))
+        trainer.tokenizer.push_to_hub(hub_repo, private=True, token=os.getenv("HF_TOKEN"))
 
     return trainer
 
 def main():
     parser = argparse.ArgumentParser(description="Train models with comparison")
-    parser.add_argument("--model_dir", type=str, default="transformer_from_scratch/distilling_init/models",
+    parser.add_argument("--model_dir", type=str, default="./transformer_from_scratch/distilling_init/models",
                        help="Directory containing initialized models")
-    parser.add_argument("--config_path", type=str, default="transformer_from_scratch/distilling_init/config/default_config.yaml",
+    parser.add_argument("--config_path", type=str, default="./transformer_from_scratch/distilling_init/config/default_config.yaml",
                        help="Path to training config YAML file")
     parser.add_argument("--dataset", type=str, default="trl-lib/Capybara",
                        help="Dataset name")
     parser.add_argument("--output_dir", type=str, default="results/",
                        help="Output directory for training results")
-    parser.add_argument("--hub_repo_gaussian", type=str, default="model_init",
+    parser.add_argument("--hub_repo_gaussian", type=str, default="pramodith/model_init_gaussian",
                        help="Hugging Face Hub repo ID for Gaussian initialized model")
-    parser.add_argument("--hub_repo_default", type=str, default="model_init",
+    parser.add_argument("--hub_repo_default", type=str, default="pramodith/model_init_default",
                        help="Hugging Face Hub repo ID for default initialized model")
     parser.add_argument("--log_level", type=str, default="INFO",
                        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -159,8 +160,11 @@ def main():
     model_dir = Path(args.model_dir)
     config_path = model_dir / "target_config.yaml"
 
-    model_a = AutoModelForCausalLM.from_pretrained(model_dir / "model_gaussian_init.pt")
-
+    model_a = AutoModelForCausalLM.from_pretrained(
+        model_dir / "model_gaussian_init",
+        attn_implementation="kernels-community/flash-attn3"
+    )
+    
     # Train both models
     trainer_a = train_model(
         model_a, train_dataset, eval_dataset, args.tokenizer_name,
@@ -169,7 +173,10 @@ def main():
     
     del model_a  # Free up memory
     torch.cuda.empty_cache()
-    model_b = AutoModelForCausalLM.from_pretrained(model_dir / "model_default_init.pt")
+    model_b = AutoModelForCausalLM.from_pretrained(
+        model_dir / "model_default_init",
+        attn_implementation="kernels-community/flash-attn3"
+    )
 
     trainer_b = train_model(
         model_b, train_dataset, eval_dataset, args.tokenizer_name,

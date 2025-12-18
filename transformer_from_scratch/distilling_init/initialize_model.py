@@ -9,14 +9,13 @@ default initialization.
 
 import argparse
 import json
-import torch
 from pathlib import Path
 from typing import Dict, Any
 import logging
 import yaml
 
 from transformers import AutoModelForCausalLM, AutoConfig
-from utils.model_utils import initialize_with_stats, create_smaller_config
+from utils.model_utils import initialize_with_stats
 from utils.logging_utils import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -48,12 +47,6 @@ def create_and_initialize_models(
     model_b = AutoModelForCausalLM.from_config(config).to(device)
 
     return model_a, model_b
-
-def save_model(model, path: Path):
-    """Save model to disk."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), path)
-    logger.info(f"Model saved to {path}")
 
 def main():
     parser = argparse.ArgumentParser(description="Initialize target model with transferred statistics")
@@ -107,8 +100,8 @@ def main():
     logger.info(f"Model B (Default init) has {model_b.num_parameters()/10**6} million parameters")
 
     # Save models
-    save_model(model_a, output_dir / "model_gaussian_init.pt")
-    save_model(model_b, output_dir / "model_default_init.pt")
+    model_a.save_pretrained(str(output_dir / "model_gaussian_init"))
+    model_b.save_pretrained(str(output_dir / "model_default_init"))
 
     # Save config for reference
     with open(output_dir / "target_config.yaml", 'w') as f:
