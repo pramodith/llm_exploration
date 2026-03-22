@@ -332,8 +332,7 @@ One of the main advantages of self/dense attention is that it can be parallelize
 
 The above implementation of Gated Delta Net lacks this property and consequently isn't used in production training pipelines. In practice the same set of equations can be reformulated to process chunks of the sequence in parallel. This is referred to as the **Chunkwise parallel form**.
 
-The math for the chunkwise parallel form is a bit more involved and I might write a follow-up blog to explain it in detail.
-
+The math for the chunkwise parallel form is a bit more involved and I might write a follow-up blog to explain it in detail. If you're interested in going through some of the official implementations I've linked them in the references below.
 
 ### References
 * [LLM Architecture Gallery](https://sebastianraschka.com/llm-architecture-gallery/#card-minimax-m2-5-230b)
@@ -341,3 +340,4 @@ The math for the chunkwise parallel form is a bit more involved and I might writ
 * [Official Implementation of Gated Delta Net](https://github.com/NVlabs/GatedDeltaNet/tree/main)
 * [Reference for Implementation](https://github.com/NVlabs/GatedDeltaNet/blob/main/lit_gpt/gated_delta_net.py)
 * [Sebastian Raschka's Implementation of Gated Delta Net](https://github.com/rasbt/LLMs-from-scratch/blob/main/ch04/08_deltanet/README.md)
+* [Flash Linear Attention libs implementation](https://github.com/fla-org/flash-linear-attention/tree/main/fla/ops/gated_delta_rule)
