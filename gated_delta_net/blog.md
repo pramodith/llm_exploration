@@ -1,9 +1,9 @@
 # Gated Delta Net Blog
 
-The recently released Qwen3.5, Nemotron-3-Super and GLM-5 [models](https://sebastianraschka.com/llm-architecture-gallery/#card-minimax-m2-5-230b) are all hybrid attention models, with interleaved linear/sparse and dense/self attention layers.
+The recently released [Olmo Hybrid](https://allenai.org/blog/olmohybrid) Qwen3.5, Nemotron-3-Super and GLM-5 [models](https://sebastianraschka.com/llm-architecture-gallery/#card-minimax-m2-5-230b) are all hybrid attention models, with interleaved linear/sparse and dense/self attention layers.
 
 While standalone linear attention models don't perform as well as dense attention models on recall oriented tasks,
-interspersing the two bridges the gap, and allows for much more efficient inference.
+interspersing the two (often referred to as hybrid attention) bridges the gap, and allows for much more efficient inference.
 
 Linear attention solves 2 key problems associated with dense attention:
 
@@ -12,7 +12,14 @@ Linear attention solves 2 key problems associated with dense attention:
 
 The outsized inference time benefits that comes with linear attention and the growing number of mainstream model providers adopting it, makes it seem like this is going to be one of those architectural paradigms like MoE, GQA etc. that will likely stick around for a while, making it a worthwhile area to understand deeply.
 
-While there are countless blogs on the workings of dense attention, I didn't find many that explained the Gated Delta Net Attention mechanism used in Qwen3.5 with the same level of detail, so I thought it would be useful to write one myself.
+Moreover, the Olmo team [highlight](https://allenai.org/blog/olmohybrid) that hybrid models are more expressive than linear only or dense only models. In the build-up to training the Olmo 3 Hybrid model, they found that hybrid models were:
+
+1. More token efficient.
+2. Performed better on a wide range of benchmarking datasets across domains.
+
+> hybrid models are more expressive than transformers, and this translates to more efficient scaling when they are pretrained in practice. Theoretically, hybrid models can represent useful computations that neither pure transformers nor pure linear RNNs can easily express alone. Moreover, we argue theoretically that this expressivity advantage likely explains the better pretraining scaling we find in practice.
+
+While there are countless blogs on the workings of dense attention, I didn't find many that explained the Gated Delta Net Attention mechanism used in Qwen3.5/Olmo Hybrid with the same level of detail, so I decided to write one myself.
 
 This blog will help you understand the intuition behind linear attention, what Gated Delta Net Attention is, the math that underpins it, some of the geometric interpretations and pytorch code to implement it from scratch.
 
@@ -37,5 +44,5 @@ with the simple update:
 $$S_t = S_{t-1} + k_t v_t^\top$$
 
 ### References
-* (LLM Architecture Gallery)[https://sebastianraschka.com/llm-architecture-gallery/#card-minimax-m2-5-230b]
-* (A Systematic Analysis of Hybrid Linear Attention)[https://arxiv.org/pdf/2507.06457]
+* [LLM Architecture Gallery](https://sebastianraschka.com/llm-architecture-gallery/#card-minimax-m2-5-230b)
+* [A Systematic Analysis of Hybrid Linear Attention](https://arxiv.org/pdf/2507.06457)
