@@ -1,25 +1,26 @@
 # Gated Delta Net Attention: A Deep Dive into the Linear Attention Mechanism Powering Qwen3.5
 
-The recently released [Olmo Hybrid](https://allenai.org/blog/olmohybrid) Qwen3.5, Nemotron-3-Super and GLM-5 [models](https://sebastianraschka.com/llm-architecture-gallery/#card-minimax-m2-5-230b) are all hybrid attention models, with interleaved linear/sparse and dense/self attention layers.
+The recently released [Olmo Hybrid](https://allenai.org/blog/olmohybrid), Qwen3.5, Nemotron-3-Super and GLM-5 [models](https://sebastianraschka.com/llm-architecture-gallery/#card-minimax-m2-5-230b) are all hybrid attention models, with interleaved linear/sparse and dense/self attention layers.
 
 While standalone linear attention models don't perform as well as dense attention models on recall oriented tasks,
 interspersing the two (often referred to as hybrid attention) bridges the gap, and allows for much more efficient inference.
 
 Linear attention solves 2 key problems associated with dense attention:
 
-1. **Growing KV-cache**: In dense attention, the key-value cache grows linearly with the sequence length, couple this with the fact that we need to save the KV-cache for each layer, it's easy to see how we can quickly run out of memory on long sequence tasks. Self-attention is also a memory bound operation on the GPU because of the need to transfer the KV-cache from HBM to SRAM memory, and back again. Linear attention on the other hand has a fixed memory footprint, and can be computed on the fly without needing to save the KV-cache.
+1. **Growing KV-cache**: In dense attention, the key-value cache grows linearly with the sequence length, couple this with the fact that we need to save the KV-cache for each layer, it's easy to see how we can quickly run out of memory on long sequence tasks. Self-attention is also a memory bound operation (at inference time) on the GPU because of the need to transfer the KV-cache from HBM to SRAM memory, and back again. Linear attention on the other hand has a fixed memory footprint, and can be computed on the fly without needing to save the KV-cache.
 2. **Quadratic compute**: Dense attention has a quadratic compute complexity with respect to the sequence length, whereas linear attention has a linear compute complexity.
 
-The outsized inference time benefits that comes with linear attention and the growing number of mainstream model providers adopting it, makes it seem like this is going to be one of those architectural paradigms like MoE, GQA etc. that will likely stick around for a while, making it a worthwhile area to understand deeply.
-
-Moreover, the Olmo team [highlight](https://allenai.org/blog/olmohybrid) that hybrid models are more expressive than linear only or dense only models. In the build-up to training the Olmo 3 Hybrid model, they found that hybrid models were:
+Further, the Olmo team [highlight](https://allenai.org/blog/olmohybrid) that hybrid models are more expressive than linear only or dense only models. In the build-up to training the Olmo 3 Hybrid model, they found that hybrid models were:
 
 1. More token efficient.
 2. Performed better on a wide range of benchmarking datasets across domains.
 
 > hybrid models are more expressive than transformers, and this translates to more efficient scaling when they are pretrained in practice. Theoretically, hybrid models can represent useful computations that neither pure transformers nor pure linear RNNs can easily express alone. Moreover, we argue theoretically that this expressivity advantage likely explains the better pretraining scaling we find in practice.
 
-While there are countless blogs on the workings of dense attention, I didn't find many that explained the Gated Delta Net Attention mechanism used in Qwen3.5/Olmo Hybrid with the same level of detail, so I decided to write one myself.
+The outsized inference time benefits, improved expressivity, and the growing number of mainstream model providers adopting it, makes it seem like this is going to be one of those architectural paradigms like MoE, GQA etc. that will likely stick around for a while, making it a worthwhile topic to understand deeply.
+
+
+While there are countless blogs on the workings of dense attention, I didn't find many that explained the Gated Delta Net Attention mechanism used in models like **Qwen3-Next, Qwen3.5, Kimi Linear, Olmo Hybrid** with the same level of detail, so I decided to write one myself.
 
 This blog will help you understand the intuition behind linear attention, what Gated Delta Net Attention is, the math that underpins it, some of the geometric interpretations and pytorch code to implement it from scratch.
 
@@ -37,11 +38,11 @@ $$\sum_{j=1}^{t} (q_t^\top k_j) \, v_j = \left( \sum_{j=1}^{t} v_j k_j^\top \rig
 
 The original representation of attention requires us to save the K and V matrices for all previous time steps, leading to a growing KV-cache. 
 
-However, with the reformulated version we can have a matrix called the **State** matrix that's updated at each time step to store the running sum of the outer product of K and V, which has a fixed size of $d \times d$ regardless of the sequence length:
+However, with the reformulated version we can have a matrix called the **State** matrix that's updated at each time step to store the running sum of the outer product of K and V, which has a fixed size of $d_v \times d_k$ (head dimension size of key and value) regardless of the sequence length:
 
 $$S_t \triangleq \sum_{j=1}^{t} v_j k_j^\top = V_{1:t}^\top K_{1:t} \in \mathbb{R}^{d_v \times d_k}$$
 
-with the simple update:
+At each time step, we can update the state matrix by adding the outer product of the current value and key:
 
 $$S_t = S_{t-1} + v_t k_t^\top$$
 
@@ -55,13 +56,15 @@ It's composed of 2 components:
 
 1. A gate/decay factor represented by **$\alpha$** that allows a model to _forget_ old information in the state matrix.
 2. A delta update rule that dynamically erases the value ($v^{\text{old}}_t$)
-associated with the current input key ($k_t$) and writes a new value ($v^{\text{new}}_t$) to the state matrix. The delta rule introduces a new hyperparameter **$\beta$** that controls the strength of the delta update.
+associated with the current input key ($k_t$) and writes a new value ($v^{\text{new}}_t$) to the state matrix. The delta rule introduces a new parameter **$\beta$** that controls the strength of the delta update.
 
 ### Decay Factor
 
 The decay factor is a straightforward scalar that's applied at each time step of the state matrix. The new state matrix is computed as:
 
 $$S_t = \alpha S_{t-1} + v_t k_t^\top$$
+
+The range of $\alpha$ is between 0 and 1, where $\alpha = 0$ means that the state matrix is completely reset at each time step (i.e., no information is retained from previous time steps). Low alpha values help the model forget old information faster, which can be beneficial for tasks that require more focus on recent inputs.
 
 ### Delta Update Rule
 
@@ -124,7 +127,9 @@ where $m$ is a non-zero vector and $I$ is the identity matrix.
 When the norm of m is 1, the Householder matrix can be simplified to:
 $$H = I - 2 mm^\top$$
 
-To understand what householder matrices do let's take a simple example of a 2D space and plot the effect of a householder matrix when it is multiplied with a vector.
+Notice how similar this is to the term $(I - \beta k_t k_t^\top)$ in our delta update rule. In fact, when $\beta = 2$ and $k_t$ is a unit vector, the term becomes a Householder matrix that reflects across the plane orthogonal to $k_t$.
+
+To understand what householder matrices do let's take a simple example of a 2D space and plot the effect of a householder matrix when it is multiplied with a vector. I'd recommend running the code below in a Jupyter notebook to get an interactive visualization of how varying $\beta$ and the angle of $m$ affects the transformation. You can also use the notebook linked [here]().
 
 ```python
 %matplotlib inline
@@ -206,7 +211,7 @@ interact(
 
 In the plot above we have an input vector $v$ along the y-axis and a vector $m$ at a 45 degree angle. The dashed line represents the plane orthogonal to $m$. The red dashed vector is the result of multiplying $v$ with the matrix $(I - \beta mm^\top)$
 
-When $\beta = 2$, we have a pure Householder transformation. $v$ is reflected across the plane orthogonal to the vector $m$.
+When $\beta = 2$, we have a pure Householder transformation. $v$ is reflected across the plane orthogonal to the vector $m$. So if $v = (0,1)$ initially, after the transformation it becomes $v' = (-1,0)$.
 
 #### $\beta$ = 1, Projection Transformation
 
@@ -218,7 +223,9 @@ When $\beta = 0$, we have an identity transformation.
 
 ### Mapping to Gated Delta Net
 
-When two vectors are orthogonal their cosine similarity is 0, since $\beta$ = 1  projects our input vector onto the orthogonal plane of our reflection vector it means that when $m = k_t$ the old value is completely erased from the state matrix.
+When two vectors are orthogonal their cosine similarity is 0, since $\beta$ = 1  projects our input vector onto the orthogonal plane of our reflection vector it means that **when $m = k_t$ and $\beta = 1$, the old value is completely erased from the state matrix.**
+
+When $\beta = 0$, the old value is completely retained.
 
 So by varying $\beta$ the model can control how much of the old value to erase.
 
@@ -245,7 +252,9 @@ $$\mathbf{o}_t = S_t q_t$$
 
 ## PyTorch Implementation
 
-In practice we have decay and beta factors for each attention head. We now have all the info required to implement Gated Delta Net Attention in PyTorch.
+In practice we have decay and beta factors for each attention head and time step, allowing head specialization and dynamic control over the update rule.
+
+We now have all the info required to implement Gated Delta Net Attention in PyTorch.
 
 ```python
 import torch
@@ -328,11 +337,13 @@ class GatedDeltaNetAttention(nn.Module):
 
 ### Deficiencies
 
-One of the main advantages of self/dense attention is that it can be parallelized across the sequence dimension, which lets us make the most of a GPU's compute capacity during training time.
+One of the main advantages of self/dense attention is that it can be parallelized across the sequence dimension, which lets us make the most of a GPU's compute capacity during training.
 
-The above implementation of Gated Delta Net lacks this property and consequently isn't used in production training pipelines. In practice the same set of equations can be reformulated to process chunks of the sequence in parallel. This is referred to as the **Chunkwise parallel form**.
+The above implementation of Gated Delta Net lacks this property and consequently isn't used in production grade training pipelines. In practice the same set of equations can be reformulated to process chunks of the sequence in parallel. This is referred to as the **Chunkwise parallel form**.
 
-The math for the chunkwise parallel form is a bit more involved and I might write a follow-up blog to explain it in detail. If you're interested in going through some of the official implementations I've linked them in the references below.
+The math for the chunkwise parallel form is a bit more involved and I might write a follow-up blog to explain it in detail or you could go through the paper if you're eager to learn!. 
+
+If you're interested in going through some of the official implementations I've linked them in the references below.
 
 ### References
 * [LLM Architecture Gallery](https://sebastianraschka.com/llm-architecture-gallery/#card-minimax-m2-5-230b)

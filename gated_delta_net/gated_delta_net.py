@@ -12,8 +12,8 @@ class GatedDeltaNet(torch.nn.Module):
         self.alpha_gate = nn.Linear(hidden_size, num_heads, bias=False)
         self.beta_gate = nn.Linear(hidden_size, num_heads, bias=False)
 
-        self.dt_bias = nn.Parameter(torch.ones(num_v_heads))
-        self.A_log = nn.Parameter(torch.empty(num_v_heads).uniform_(0, 16).log())
+        self.dt_bias = nn.Parameter(torch.ones(num_heads) * -1.0)
+        self.A_log = nn.Parameter(torch.empty(num_heads).uniform_(0, 16).log())
 
     def forward(self, x, q, k, v):
         """
